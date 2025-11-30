@@ -48,13 +48,38 @@ func newTaskQueue() *taskQueue {
 	}
 }
 
-// Push adds a task to the queue.
+// compactHeap removes cancelled tasks from the heap and rebuilds the heap property.
+func (q *taskQueue) compactHeap() {
+	write := 0
+	for read := 0; read < len(q.heap); read++ {
+		if !q.heap[read].cancelled.Load() {
+			q.heap[write] = q.heap[read]
+			q.heap[write].index = write
+			write++
+		}
+	}
+
+	for i := write; i < len(q.heap); i++ {
+		q.heap[i] = nil
+	}
+	q.heap = q.heap[:write]
+
+	for i := len(q.heap)/2 - 1; i >= 0; i-- {
+		q.down(i, len(q.heap))
+	}
+}
+
+// Push adds a task to the queue with periodic cleanup to prevent memory leaks.
 func (q *taskQueue) Push(task *scheduledTask) {
 	q.mu.Lock()
+
+	if len(q.heap) > 100 && len(q.heap)%100 == 0 {
+		q.compactHeap()
+	}
+
 	q.push(task)
 	q.mu.Unlock()
 
-	// Notify scheduler of new task
 	select {
 	case q.notif <- struct{}{}:
 	default:
@@ -69,17 +94,27 @@ func (q *taskQueue) push(task *scheduledTask) {
 }
 
 // PopDue removes and returns all tasks that are due (executeAt <= now).
+// Also tracks cancelled tasks encountered and triggers compaction if many are found.
 func (q *taskQueue) PopDue(now time.Time) []*scheduledTask {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	var due []*scheduledTask
+	cancelledCount := 0
+
 	for len(q.heap) > 0 && !q.heap[0].executeAt.After(now) {
 		task := q.pop()
 		if !task.cancelled.Load() {
 			due = append(due, task)
+		} else {
+			cancelledCount++
 		}
 	}
+
+	if cancelledCount > 50 && len(q.heap) > 0 {
+		q.compactHeap()
+	}
+
 	return due
 }
 

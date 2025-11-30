@@ -168,7 +168,7 @@ func (s *Session) String() string {
 	defer s.mu.RUnlock()
 
 	comps := ""
-	for id := ComponentID(0); id < MaxComponents; id++ {
+	for id := range ComponentID(MaxComponents) {
 		if s.mask.Has(id) {
 			if comps != "" {
 				comps += ", "
@@ -224,7 +224,7 @@ func (s *Session) close() {
 	var toDetach []detachInfo
 
 	s.mu.Lock()
-	for id := ComponentID(0); id < MaxComponents; id++ {
+	for id := range ComponentID(MaxComponents) {
 		ptr := s.components[id]
 		if ptr == nil {
 			continue
@@ -269,7 +269,7 @@ func (s *Session) clearRelationsTo(target *Session) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for id := ComponentID(0); id < MaxComponents; id++ {
+	for id := range ComponentID(MaxComponents) {
 		ptr := s.components[id]
 		if ptr != nil {
 			// Use the generic helper which handles both interface check and reflection fallback

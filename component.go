@@ -15,61 +15,74 @@ type ComponentID uint8
 // MaxComponents is the maximum number of component types supported.
 const MaxComponents = 255
 
-// componentRegistry manages component type registration.
+// componentRegistry manages component type registration with lock-free reads.
+// Component IDs are assigned sequentially and cached for fast lookup.
+// sync.Map provides lock-free reads for the hot path (checking registered types)
+// while still allowing safe concurrent registration.
 type componentRegistry struct {
-	mu       sync.RWMutex
-	types    map[reflect.Type]ComponentID
+	// types maps reflect.Type to ComponentID using sync.Map for lock-free reads
+	// This is the hot path - components are registered once but looked up constantly
+	types sync.Map // map[reflect.Type]ComponentID
+
+	// names and typesArr store component metadata indexed by ComponentID
+	// These are written once during registration and read-only afterward
 	names    [MaxComponents]string
-	nextID   uint32 // atomic
 	typesArr [MaxComponents]reflect.Type
+
+	// nextID is the next available component ID (atomic for lock-free allocation)
+	nextID atomic.Uint32
+
+	// arrMu protects writes to names and typesArr arrays
+	// Only needed during registration, not for normal lookups
+	arrMu sync.RWMutex
 }
 
 // globalRegistry is the singleton component registry.
-var globalRegistry = &componentRegistry{
-	types: make(map[reflect.Type]ComponentID),
-}
+var globalRegistry = &componentRegistry{}
 
 // registerComponentType registers a component type and returns its ID.
 // This is called automatically when components are first used.
 func registerComponentType(t reflect.Type) ComponentID {
-	// Fast path: check if already registered
-	globalRegistry.mu.RLock()
-	if id, ok := globalRegistry.types[t]; ok {
-		globalRegistry.mu.RUnlock()
-		return id
-	}
-	globalRegistry.mu.RUnlock()
-
-	// Slow path: register new type
-	globalRegistry.mu.Lock()
-	defer globalRegistry.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if id, ok := globalRegistry.types[t]; ok {
-		return id
+	// Fast path: lock-free read from sync.Map
+	// Most calls hit this path since types are registered early
+	if id, ok := globalRegistry.types.Load(t); ok {
+		return id.(ComponentID)
 	}
 
-	// Allocate new ID
-	newID := atomic.AddUint32(&globalRegistry.nextID, 1) - 1
+	// Slow path: need to register new type
+	// Atomically allocate ID before attempting to register
+	// This ensures each registration attempt gets a unique ID
+	newID := ComponentID(globalRegistry.nextID.Add(1) - 1)
 	if newID >= MaxComponents {
 		panic(fmt.Sprintf("pecs: component limit exceeded (max %d types)", MaxComponents))
 	}
 
-	id := ComponentID(newID)
-	globalRegistry.types[t] = id
-	globalRegistry.names[id] = t.Name()
-	globalRegistry.typesArr[id] = t
+	// Try to store our ID atomically
+	// LoadOrStore ensures only one goroutine wins if multiple try simultaneously
+	actual, loaded := globalRegistry.types.LoadOrStore(t, newID)
+	if loaded {
+		// Another goroutine registered this type first
+		// Use their ID instead of ours (our allocated ID is wasted, but that's rare)
+		return actual.(ComponentID)
+	}
 
-	return id
+	// We won the race - store the metadata for this ID
+	// This is the only place these arrays are written for this ID
+	globalRegistry.arrMu.Lock()
+	globalRegistry.names[newID] = t.Name()
+	globalRegistry.typesArr[newID] = t
+	globalRegistry.arrMu.Unlock()
+
+	return newID
 }
 
 // getComponentID returns the ID for a registered component type.
 // Returns false if the type is not registered.
 func getComponentID(t reflect.Type) (ComponentID, bool) {
-	globalRegistry.mu.RLock()
-	defer globalRegistry.mu.RUnlock()
-	id, ok := globalRegistry.types[t]
-	return id, ok
+	if id, ok := globalRegistry.types.Load(t); ok {
+		return id.(ComponentID), true
+	}
+	return 0, false
 }
 
 // componentID returns the ComponentID for type T, registering it if needed.
@@ -244,20 +257,22 @@ func (s *Session) removeComponentUnsafe(id ComponentID) unsafe.Pointer {
 }
 
 // ComponentName returns the name of the component type with the given ID.
+// Uses read lock since names array is only written during registration.
 func ComponentName(id ComponentID) string {
-	globalRegistry.mu.RLock()
-	defer globalRegistry.mu.RUnlock()
+	globalRegistry.arrMu.RLock()
+	defer globalRegistry.arrMu.RUnlock()
 	return globalRegistry.names[id]
 }
 
 // ComponentType returns the reflect.Type of the component with the given ID.
+// Uses read lock since typesArr is only written during registration.
 func ComponentType(id ComponentID) reflect.Type {
-	globalRegistry.mu.RLock()
-	defer globalRegistry.mu.RUnlock()
+	globalRegistry.arrMu.RLock()
+	defer globalRegistry.arrMu.RUnlock()
 	return globalRegistry.typesArr[id]
 }
 
 // RegisteredComponentCount returns the number of registered component types.
 func RegisteredComponentCount() int {
-	return int(atomic.LoadUint32(&globalRegistry.nextID))
+	return int(globalRegistry.nextID.Load())
 }

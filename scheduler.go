@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
 )
 
@@ -39,6 +38,10 @@ type Scheduler struct {
 	tickRate   time.Duration
 	lastTick   time.Time
 	tickNumber uint64
+
+	// Buffer pools for reducing allocations
+	// Reusing session slices significantly reduces GC pressure in the hot path
+	sessionBufPool sync.Pool
 }
 
 // loopState tracks the state of a single loop system.
@@ -73,10 +76,7 @@ func (l *loopState) MarkRun(now time.Time) {
 
 // newScheduler creates a new scheduler.
 func newScheduler(manager *Manager) *Scheduler {
-	workers := runtime.GOMAXPROCS(0)
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(runtime.GOMAXPROCS(0), 1)
 
 	return &Scheduler{
 		manager:    manager,
@@ -85,6 +85,12 @@ func newScheduler(manager *Manager) *Scheduler {
 		tickRate:   50 * time.Millisecond, // 20 TPS
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
+		sessionBufPool: sync.Pool{
+			New: func() any {
+				buf := make([]*Session, 0, 64)
+				return &buf
+			},
+		},
 	}
 }
 
@@ -156,7 +162,7 @@ func (s *Scheduler) tick(now time.Time) {
 	worldSessions := s.manager.groupedSessions()
 
 	// Execute loops by stage
-	for stage := Before; stage < stageCount; stage++ {
+	for stage := range stageCount {
 		s.runLoopsForStage(now, stage, worldSessions)
 	}
 
@@ -219,39 +225,57 @@ func (s *Scheduler) processWorldBatches(now time.Time, w *world.World, sessions 
 
 		// Execute batch in its own transaction
 		w.Exec(func(tx *world.Tx) {
+			bufPtr := s.sessionBufPool.Get().(*[]*Session)
+			validSessions := (*bufPtr)[:0] // Reset length, keep capacity
+
+			defer func() {
+				*bufPtr = validSessions[:0]
+				s.sessionBufPool.Put(bufPtr)
+			}()
+
 			// Filter valid sessions for this transaction
-			validSessions := make([]*Session, 0, len(sessions))
+			// Sessions might be offline or in different worlds
 			for _, sess := range sessions {
+				// Skip closed sessions
 				if sess.closed.Load() {
 					continue
 				}
+
+				// Verify session's player is in this transaction's world
+				// getPlayerFromTx checks if the entity handle resolves in this tx
 				p := s.manager.getPlayerFromTx(tx, sess)
 				if p == nil {
 					continue
 				}
+
 				validSessions = append(validSessions, sess)
 			}
 
+			// Skip batch if no valid sessions remain
 			if len(validSessions) == 0 {
 				return
 			}
 
-			// Run loops in parallel
+			// Run all loops in this batch in parallel
+			// Loops in the same batch don't conflict with each other
+			// (verified during batch construction based on component access)
 			var batchWG sync.WaitGroup
 			batchWG.Add(len(runnableLoops))
 
 			for _, loop := range runnableLoops {
-				loop := loop
+				// Capture for goroutine
 				go func() {
 					defer batchWG.Done()
 					s.executeLoopForSessions(validSessions, loop)
 				}()
 			}
 
+			// Wait for all loops to finish before committing transaction
 			batchWG.Wait()
 		})
 
-		// Update timing
+		// Update timing information for next execution
+		// MarkRun calculates next run time based on interval
 		for _, loop := range runnableLoops {
 			loop.MarkRun(now)
 		}
@@ -371,7 +395,7 @@ func (s *Scheduler) processTasks(now time.Time) {
 	}
 
 	// Execute by stage
-	for stage := Before; stage < stageCount; stage++ {
+	for stage := range stageCount {
 		s.executeTasksForStage(tasksByStage[stage])
 	}
 }
@@ -399,9 +423,12 @@ func (s *Scheduler) executeTasksForStage(tasks []*scheduledTask) {
 			}
 			// Get world from first session
 			if taskWorld == nil {
-				sess.Exec(func(tx *world.Tx, p *player.Player) {
-					taskWorld = tx.World()
-				})
+				taskWorld = sess.World()
+			} else if w := sess.World(); w != taskWorld {
+				// Multi-session tasks require all sessions in same world
+				// Tasks spanning worlds are invalid and skipped
+				allValid = false
+				break
 			}
 		}
 

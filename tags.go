@@ -84,8 +84,8 @@ func parseTag(tag string) TagInfo {
 		return info
 	}
 
-	parts := strings.Split(tag, ",")
-	for _, part := range parts {
+	parts := strings.SplitSeq(tag, ",")
+	for part := range parts {
 		part = strings.TrimSpace(part)
 		switch part {
 		case modMut:
@@ -109,8 +109,8 @@ func hasTag(tag string, mod string) bool {
 	if tag == "" {
 		return false
 	}
-	parts := strings.Split(tag, ",")
-	for _, part := range parts {
+	parts := strings.SplitSeq(tag, ",")
+	for part := range parts {
 		if strings.TrimSpace(part) == mod {
 			return true
 		}

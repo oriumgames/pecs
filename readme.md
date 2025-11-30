@@ -20,7 +20,7 @@ func main() {
     gameplay := pecs.NewBundle("gameplay").
         Handler(&MyHandler{}).
         Loop(&RegenSystem{}, time.Second, pecs.Default)
-    		// Injection, Resource, Command and Task are also available.
+        // Injection, Resource, Command and Task are also available.
 
     // Initialize manager
     pecs.NewBuilder().
@@ -35,9 +35,9 @@ When players join, create a Session and register the handler:
 
 ```go
 for p := range srv.Accept() {
-		sess := pecs.NewSession(p)
-		p.Handle(pecs.NewHandler(sess))
-	}
+    sess := pecs.NewSession(p)
+    p.Handle(pecs.NewHandler(sess))
+}
 ```
 
 ### 2. Components

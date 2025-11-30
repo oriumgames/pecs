@@ -250,6 +250,13 @@ func (s *Session) close() {
 		info.component.Detach(s)
 	}
 
+	// Disconnect the player if still online
+	if s.handle != nil {
+		s.Exec(func(tx *world.Tx, p *player.Player) {
+			p.Disconnect("Server shutting down")
+		})
+	}
+
 	// Notify manager
 	if s.manager != nil {
 		s.manager.removeSession(s)

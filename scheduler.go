@@ -2,6 +2,7 @@ package pecs
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -29,9 +30,10 @@ type Scheduler struct {
 	workerWG   sync.WaitGroup
 
 	// Execution state
-	running atomic.Bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
+	running      atomic.Bool
+	stopCh       chan struct{}
+	doneCh       chan struct{}
+	shutdownOnce sync.Once
 
 	// Tick tracking
 	tickRate   time.Duration
@@ -281,7 +283,7 @@ func (s *Scheduler) executeLoopForSessions(sessions []*Session, loop *loopState)
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					fmt.Printf("pecs: panic in loop %s: %v\n%s", loop.meta.Name, r, debug.Stack())
+					s.handleSystemPanic("loop", loop.meta.Name, r)
 				}
 			}()
 			system.Run()
@@ -444,6 +446,17 @@ func (s *Scheduler) executeTasksForWorld(w *world.World, tasks []*scheduledTask)
 	})
 }
 
+func (s *Scheduler) handleSystemPanic(kind, name string, recovered any) {
+	err := fmt.Errorf("pecs: panic in %s %s: %v\n%s", kind, name, recovered, debug.Stack())
+	s.shutdownOnce.Do(func() {
+		go func(k, n string, e error) {
+			s.manager.Shutdown()
+			fmt.Println(e.Error())
+			os.Exit(1)
+		}(kind, name, err)
+	})
+}
+
 // executeTask executes a single task.
 func (s *Scheduler) executeTask(tx *world.Tx, task *scheduledTask) {
 	// Validate sessions are in this transaction
@@ -482,7 +495,7 @@ func (s *Scheduler) executeTask(tx *world.Tx, task *scheduledTask) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Printf("pecs: panic in task %s: %v\n%s", task.meta.Name, r, debug.Stack())
+				s.handleSystemPanic("task", task.meta.Name, r)
 			}
 		}()
 		task.task.Run()

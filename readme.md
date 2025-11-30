@@ -87,7 +87,7 @@ Systems contain logic. They are stateless structs that have dependencies injecte
 **Example Handler:**
 ```go
 type DamageHandler struct {
-		player.NopHandler
+    player.NopHandler
     Session *pecs.Session
     Health  *Health `pecs:"mut"`      // Must have Health
     GodMode *GodMode `pecs:"opt"`     // Might have GodMode

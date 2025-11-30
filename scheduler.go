@@ -266,7 +266,7 @@ func (s *Scheduler) processWorldBatches(now time.Time, w *world.World, sessions 
 				// Capture for goroutine
 				go func() {
 					defer batchWG.Done()
-					s.executeLoopForSessions(validSessions, loop)
+					s.executeLoopForSessions(tx, validSessions, loop)
 				}()
 			}
 
@@ -283,7 +283,7 @@ func (s *Scheduler) processWorldBatches(now time.Time, w *world.World, sessions 
 }
 
 // executeLoopForSessions runs a single loop system for all provided sessions.
-func (s *Scheduler) executeLoopForSessions(sessions []*Session, loop *loopState) {
+func (s *Scheduler) executeLoopForSessions(tx *world.Tx, sessions []*Session, loop *loopState) {
 	system := loop.meta.Pool.Get().(Runnable)
 	defer func() {
 		zeroSystem(system, loop.meta)
@@ -310,7 +310,7 @@ func (s *Scheduler) executeLoopForSessions(sessions []*Session, loop *loopState)
 					s.handleSystemPanic("loop", loop.meta.Name, r)
 				}
 			}()
-			system.Run()
+			system.Run(tx)
 		}()
 
 		// Zero after each execution for safety
@@ -525,7 +525,7 @@ func (s *Scheduler) executeTask(tx *world.Tx, task *scheduledTask) {
 				s.handleSystemPanic("task", task.meta.Name, r)
 			}
 		}()
-		task.task.Run()
+		task.task.Run(tx)
 	}()
 
 	// Remove from session pending lists

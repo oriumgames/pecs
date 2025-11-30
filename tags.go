@@ -6,7 +6,7 @@ import (
 
 // Tag constants
 const (
-	tagName = "github.com/oriumgames/pecs"
+	tagName = "pecs"
 )
 
 // Tag modifiers

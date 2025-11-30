@@ -200,7 +200,7 @@ type RegenLoop struct {
     _ pecs.Without[Combat] // Don't regen in combat
 }
 
-func (l *RegenLoop) Run() {
+func (l *RegenLoop) Run(tx *world.Tx) {
     if l.Health.Current < l.Health.Max {
         l.Health.Current += l.Config.RegenRate
         if l.Health.Current > l.Health.Max {
@@ -226,8 +226,8 @@ type TeleportTask struct {
     Message     string
 }
 
-func (t *TeleportTask) Run() {
-    if p, ok := t.Session.Player(/* tx from context */); ok {
+func (t *TeleportTask) Run(tx *world.Tx) {
+    if p, ok := t.Session.Player(tx); ok {
         p.Teleport(t.Destination)
         p.Message(t.Message)
     }
@@ -258,6 +258,28 @@ type TradeTask struct {
 }
 
 handle := pecs.Schedule2(buyer, seller, &TradeTask{...}, 3*time.Second)
+```
+
+### Transaction Context
+
+All systems receive a `*world.Tx` parameter. Your session's player is **guaranteed** to exist in this transaction - the scheduler validates this before calling your system. You only need to check `ok` when accessing players through relations or other sessions not defined in your system struct.
+```go
+// Your session's player - always valid, no need to check
+func (l *MyLoop) Run(tx *world.Tx) {
+    p, _ := l.Session.Player(tx) // Safe!
+    p.Message("Hello!")
+}
+
+// Other players via relations - check these
+func (l *PartyLoop) Run(tx *world.Tx) {
+    p, _ := l.Session.Player(tx) // Safe!
+    
+    for memberSess := range l.Party.Members.Iter() {
+        if member, ok := memberSess.Player(tx); ok { // Check this!
+            member.Message("Party message")
+        }
+    }
+}
 ```
 
 ### Relations

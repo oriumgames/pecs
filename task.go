@@ -1,0 +1,278 @@
+package pecs
+
+import (
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// scheduledTask represents a task scheduled for future execution.
+type scheduledTask struct {
+	// executeAt is the time the task should execute
+	executeAt time.Time
+
+	// sessions are the sessions involved in this task
+	sessions []*Session
+
+	// task is the task instance with payload
+	task Runnable
+
+	// meta is the pre-computed metadata for this task type
+	meta *SystemMeta
+
+	// bundle is the bundle this task belongs to (for resource access)
+	bundle *Bundle
+
+	// cancelled indicates if the task has been cancelled
+	cancelled atomic.Bool
+
+	// index is the heap index for efficient removal
+	index int
+}
+
+// taskQueue is a priority queue for scheduled tasks.
+// It uses a binary heap for O(log n) insertion and removal.
+type taskQueue struct {
+	mu    sync.Mutex
+	heap  []*scheduledTask
+	timer *time.Timer
+	notif chan struct{}
+}
+
+// newTaskQueue creates a new task queue.
+func newTaskQueue() *taskQueue {
+	return &taskQueue{
+		heap:  make([]*scheduledTask, 0, 64),
+		notif: make(chan struct{}, 1),
+	}
+}
+
+// Push adds a task to the queue.
+func (q *taskQueue) Push(task *scheduledTask) {
+	q.mu.Lock()
+	q.push(task)
+	q.mu.Unlock()
+
+	// Notify scheduler of new task
+	select {
+	case q.notif <- struct{}{}:
+	default:
+	}
+}
+
+// push adds a task without locking. Caller must hold lock.
+func (q *taskQueue) push(task *scheduledTask) {
+	task.index = len(q.heap)
+	q.heap = append(q.heap, task)
+	q.up(task.index)
+}
+
+// PopDue removes and returns all tasks that are due (executeAt <= now).
+func (q *taskQueue) PopDue(now time.Time) []*scheduledTask {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var due []*scheduledTask
+	for len(q.heap) > 0 && !q.heap[0].executeAt.After(now) {
+		task := q.pop()
+		if !task.cancelled.Load() {
+			due = append(due, task)
+		}
+	}
+	return due
+}
+
+// Peek returns the next due time without removing.
+func (q *taskQueue) Peek() (time.Time, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.heap) == 0 {
+		return time.Time{}, false
+	}
+	return q.heap[0].executeAt, true
+}
+
+// Remove cancels and removes a task from the queue.
+func (q *taskQueue) Remove(task *scheduledTask) {
+	task.cancelled.Store(true)
+}
+
+// Len returns the number of tasks in the queue.
+func (q *taskQueue) Len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.heap)
+}
+
+// Clear removes all tasks from the queue.
+func (q *taskQueue) Clear() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.heap = q.heap[:0]
+}
+
+// Notify returns the notification channel.
+func (q *taskQueue) Notify() <-chan struct{} {
+	return q.notif
+}
+
+// pop removes and returns the minimum task. Caller must hold lock.
+func (q *taskQueue) pop() *scheduledTask {
+	n := len(q.heap) - 1
+	q.swap(0, n)
+	q.down(0, n)
+	task := q.heap[n]
+	q.heap[n] = nil // Allow GC
+	q.heap = q.heap[:n]
+	task.index = -1
+	return task
+}
+
+// up moves task at index up the heap.
+func (q *taskQueue) up(i int) {
+	for {
+		parent := (i - 1) / 2
+		if parent == i || !q.heap[i].executeAt.Before(q.heap[parent].executeAt) {
+			break
+		}
+		q.swap(i, parent)
+		i = parent
+	}
+}
+
+// down moves task at index down the heap.
+func (q *taskQueue) down(i, n int) {
+	for {
+		left := 2*i + 1
+		if left >= n || left < 0 {
+			break
+		}
+		j := left
+		if right := left + 1; right < n && q.heap[right].executeAt.Before(q.heap[left].executeAt) {
+			j = right
+		}
+		if !q.heap[j].executeAt.Before(q.heap[i].executeAt) {
+			break
+		}
+		q.swap(i, j)
+		i = j
+	}
+}
+
+// swap swaps two tasks in the heap.
+func (q *taskQueue) swap(i, j int) {
+	q.heap[i], q.heap[j] = q.heap[j], q.heap[i]
+	q.heap[i].index = i
+	q.heap[j].index = j
+}
+
+// TaskHandle allows cancelling a scheduled task.
+type TaskHandle struct {
+	task *scheduledTask
+}
+
+// Cancel cancels the scheduled task.
+func (h *TaskHandle) Cancel() {
+	if h != nil && h.task != nil {
+		h.task.cancelled.Store(true)
+	}
+}
+
+// Schedule schedules a task for execution after the given delay.
+// The task will only run if the session passes the bitmask check at execution time.
+// Returns a TaskHandle that can be used to cancel the task.
+func Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle {
+	if s == nil || s.closed.Load() || globalManager == nil {
+		return nil
+	}
+
+	// Get or create metadata for this task type
+	taskType := reflect.TypeOf(task)
+	meta := globalManager.getTaskMeta(taskType)
+	if meta == nil {
+		// Task type not registered - analyze on the fly
+		var err error
+		meta, err = analyzeSystem(taskType, nil)
+		if err != nil {
+			return nil
+		}
+	}
+
+	// Find the bundle for this task
+	var bundle *Bundle
+	for _, b := range globalManager.bundles {
+		if b.getTaskMeta(taskType) != nil {
+			bundle = b
+			break
+		}
+	}
+
+	scheduled := &scheduledTask{
+		executeAt: time.Now().Add(delay),
+		sessions:  []*Session{s},
+		task:      task,
+		meta:      meta,
+		bundle:    bundle,
+	}
+
+	s.addTask(scheduled)
+	globalManager.taskQueue.Push(scheduled)
+
+	return &TaskHandle{task: scheduled}
+}
+
+// Schedule2 schedules a multi-session task for execution after the given delay.
+// Both sessions must be in the same world at execution time.
+// Returns a TaskHandle that can be used to cancel the task.
+func Schedule2(s1, s2 *Session, task Runnable, delay time.Duration) *TaskHandle {
+	if s1 == nil || s2 == nil || s1.closed.Load() || s2.closed.Load() || globalManager == nil {
+		return nil
+	}
+
+	taskType := reflect.TypeOf(task)
+	meta := globalManager.getTaskMeta(taskType)
+	if meta == nil {
+		var err error
+		meta, err = analyzeSystem(taskType, nil)
+		if err != nil {
+			return nil
+		}
+		meta.IsMultiSession = true
+	}
+
+	var bundle *Bundle
+	for _, b := range globalManager.bundles {
+		if b.getTaskMeta(taskType) != nil {
+			bundle = b
+			break
+		}
+	}
+
+	scheduled := &scheduledTask{
+		executeAt: time.Now().Add(delay),
+		sessions:  []*Session{s1, s2},
+		task:      task,
+		meta:      meta,
+		bundle:    bundle,
+	}
+
+	s1.addTask(scheduled)
+	s2.addTask(scheduled)
+	globalManager.taskQueue.Push(scheduled)
+
+	return &TaskHandle{task: scheduled}
+}
+
+// Dispatch immediately executes a task in the next tick.
+// Returns a TaskHandle that can be used to cancel the task.
+func Dispatch(s *Session, task Runnable) *TaskHandle {
+	return Schedule(s, task, 0)
+}
+
+// Dispatch2 immediately executes a multi-session task in the next tick.
+// Returns a TaskHandle that can be used to cancel the task.
+func Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle {
+	return Schedule2(s1, s2, task, 0)
+}

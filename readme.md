@@ -28,7 +28,7 @@ func main() {
         Resource(&Config{RegenRate: 1}).
         Handler(&DamageHandler{}).
         Loop(&RegenLoop{}, time.Second, pecs.Default)
-    		// Injection, Command and Task are also available.
+        // Injection, Command and Task are also available.
 
     // Initialize PECS
     pecs.NewBuilder().

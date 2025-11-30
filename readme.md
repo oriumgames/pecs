@@ -36,8 +36,9 @@ func main() {
         Init()
 
     // Start your Dragonfly server
-    srv := server.New(&server.Config{...})
+    srv := // start a new server here
     srv.Listen()
+    srv.CloseOnProgramEnd()
 
     for p := range srv.Accept() {
         sess := pecs.NewSession(p)

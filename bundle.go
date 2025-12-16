@@ -165,10 +165,10 @@ func (b *Bundle) getInjection(t reflect.Type) unsafe.Pointer {
 }
 
 // build analyzes all systems and computes metadata.
-func (b *Bundle) build() error {
+func (b *Bundle) build(registry *componentRegistry) error {
 	// Build handler metadata
 	for _, reg := range b.handlers {
-		meta, err := analyzeSystem(reflect.TypeOf(reg.handler), b)
+		meta, err := analyzeSystem(reflect.TypeOf(reg.handler), b, registry)
 		if err != nil {
 			return err
 		}
@@ -177,7 +177,7 @@ func (b *Bundle) build() error {
 
 	// Build loop metadata
 	for _, reg := range b.loops {
-		meta, err := analyzeSystem(reflect.TypeOf(reg.system), b)
+		meta, err := analyzeSystem(reflect.TypeOf(reg.system), b, registry)
 		if err != nil {
 			return err
 		}
@@ -191,7 +191,7 @@ func (b *Bundle) build() error {
 		if t.Kind() == reflect.Ptr {
 			t = t.Elem()
 		}
-		meta, err := analyzeSystem(t, b)
+		meta, err := analyzeSystem(t, b, registry)
 		if err != nil {
 			return err
 		}

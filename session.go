@@ -54,28 +54,6 @@ type Session struct {
 	taskMu       sync.Mutex
 }
 
-// NewSession creates a new session for a player.
-// This should be called when a player joins and the returned session
-// should be passed to player.Handle().
-func NewSession(p *player.Player) *Session {
-	s := &Session{
-		handle: p.H(),
-		uuid:   p.UUID(),
-		name:   p.Name(),
-		xuid:   p.XUID(),
-	}
-
-	s.updateWorldCache(p.Tx().World())
-
-	// Register with global manager if initialized
-	if globalManager != nil {
-		s.manager = globalManager
-		globalManager.addSession(s)
-	}
-
-	return s
-}
-
 // Handle returns the underlying EntityHandle.
 func (s *Session) Handle() *world.EntityHandle {
 	return s.handle
@@ -139,6 +117,22 @@ func (s *Session) Manager() *Manager {
 	return s.manager
 }
 
+// Broadcast dispatches an event to all active sessions.
+// This is a convenience method that delegates to Manager.Broadcast.
+func (s *Session) Broadcast(event any) {
+	if s.manager != nil {
+		s.manager.Broadcast(event)
+	}
+}
+
+// BroadcastExcept dispatches an event to all active sessions except the specified ones.
+// This is a convenience method that delegates to Manager.BroadcastExcept.
+func (s *Session) BroadcastExcept(event any, exclude ...*Session) {
+	if s.manager != nil {
+		s.manager.BroadcastExcept(event, exclude...)
+	}
+}
+
 // Closed returns true if the session has been closed.
 func (s *Session) Closed() bool {
 	return s.closed.Load()
@@ -173,7 +167,7 @@ func (s *Session) String() string {
 			if comps != "" {
 				comps += ", "
 			}
-			comps += ComponentName(id)
+			comps += s.manager.registry.getName(id)
 		}
 	}
 
@@ -234,7 +228,7 @@ func (s *Session) close() {
 		s.mask.Clear(id)
 
 		// Check if component implements Detachable
-		t := ComponentType(id)
+		t := s.manager.registry.getType(id)
 		if t != nil {
 			// Create a pointer to the component and check interface
 			val := reflect.NewAt(t, ptr).Interface()
@@ -295,29 +289,4 @@ func (s *Session) removeTask(task *scheduledTask) {
 		}
 	}
 	s.taskMu.Unlock()
-}
-
-// GetSession retrieves the session for a player.
-// Returns nil if the player doesn't have a PECS session.
-func GetSession(p *player.Player) *Session {
-	if globalManager == nil {
-		return nil
-	}
-	return globalManager.getSessionByHandle(p.H())
-}
-
-// GetSessionByHandle retrieves a session by its entity handle.
-func GetSessionByHandle(h *world.EntityHandle) *Session {
-	if globalManager == nil {
-		return nil
-	}
-	return globalManager.getSessionByHandle(h)
-}
-
-// GetSessionByUUID retrieves a session by the player's UUID.
-func GetSessionByUUID(id uuid.UUID) *Session {
-	if globalManager == nil {
-		return nil
-	}
-	return globalManager.getSessionByUUID(id)
 }

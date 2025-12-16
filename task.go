@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/df-mc/dragonfly/server/world"
 )
 
 // scheduledTask represents a task scheduled for future execution.
@@ -219,17 +221,19 @@ func (h *TaskHandle) Cancel() {
 // The task will only run if the session passes the bitmask check at execution time.
 // Returns a TaskHandle that can be used to cancel the task.
 func Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle {
-	if s == nil || s.closed.Load() || globalManager == nil {
+	if s == nil || s.closed.Load() || s.manager == nil {
 		return nil
 	}
 
+	m := s.manager
+
 	// Get or create metadata for this task type
 	taskType := reflect.TypeOf(task)
-	meta := globalManager.getTaskMeta(taskType)
+	meta := m.getTaskMeta(taskType)
 	if meta == nil {
 		// Task type not registered - analyze on the fly
 		var err error
-		meta, err = analyzeSystem(taskType, nil)
+		meta, err = analyzeSystem(taskType, nil, m.registry)
 		if err != nil {
 			return nil
 		}
@@ -237,7 +241,7 @@ func Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle {
 
 	// Find the bundle for this task
 	var bundle *Bundle
-	for _, b := range globalManager.bundles {
+	for _, b := range m.bundles {
 		if b.getTaskMeta(taskType) != nil {
 			bundle = b
 			break
@@ -253,24 +257,31 @@ func Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle {
 	}
 
 	s.addTask(scheduled)
-	globalManager.taskQueue.Push(scheduled)
+	m.taskQueue.Push(scheduled)
 
 	return &TaskHandle{task: scheduled}
 }
 
 // Schedule2 schedules a multi-session task for execution after the given delay.
-// Both sessions must be in the same world at execution time.
+// Both sessions must be in the same world at execution time and belong to the same manager.
 // Returns a TaskHandle that can be used to cancel the task.
 func Schedule2(s1, s2 *Session, task Runnable, delay time.Duration) *TaskHandle {
-	if s1 == nil || s2 == nil || s1.closed.Load() || s2.closed.Load() || globalManager == nil {
+	if s1 == nil || s2 == nil || s1.closed.Load() || s2.closed.Load() || s1.manager == nil {
 		return nil
 	}
 
+	// Both sessions must belong to the same manager
+	if s1.manager != s2.manager {
+		return nil
+	}
+
+	m := s1.manager
+
 	taskType := reflect.TypeOf(task)
-	meta := globalManager.getTaskMeta(taskType)
+	meta := m.getTaskMeta(taskType)
 	if meta == nil {
 		var err error
-		meta, err = analyzeSystem(taskType, nil)
+		meta, err = analyzeSystem(taskType, nil, m.registry)
 		if err != nil {
 			return nil
 		}
@@ -278,7 +289,7 @@ func Schedule2(s1, s2 *Session, task Runnable, delay time.Duration) *TaskHandle 
 	}
 
 	var bundle *Bundle
-	for _, b := range globalManager.bundles {
+	for _, b := range m.bundles {
 		if b.getTaskMeta(taskType) != nil {
 			bundle = b
 			break
@@ -295,7 +306,7 @@ func Schedule2(s1, s2 *Session, task Runnable, delay time.Duration) *TaskHandle 
 
 	s1.addTask(scheduled)
 	s2.addTask(scheduled)
-	globalManager.taskQueue.Push(scheduled)
+	m.taskQueue.Push(scheduled)
 
 	return &TaskHandle{task: scheduled}
 }
@@ -310,4 +321,168 @@ func Dispatch(s *Session, task Runnable) *TaskHandle {
 // Returns a TaskHandle that can be used to cancel the task.
 func Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle {
 	return Schedule2(s1, s2, task, 0)
+}
+
+// ScheduleAt schedules a task for execution at a specific time.
+// If the time is in the past, the task will execute on the next tick.
+// Returns a TaskHandle that can be used to cancel the task.
+func ScheduleAt(s *Session, task Runnable, at time.Time) *TaskHandle {
+	if s == nil || s.closed.Load() || s.manager == nil {
+		return nil
+	}
+
+	m := s.manager
+
+	taskType := reflect.TypeOf(task)
+	meta := m.getTaskMeta(taskType)
+	if meta == nil {
+		var err error
+		meta, err = analyzeSystem(taskType, nil, m.registry)
+		if err != nil {
+			return nil
+		}
+	}
+
+	var bundle *Bundle
+	for _, b := range m.bundles {
+		if b.getTaskMeta(taskType) != nil {
+			bundle = b
+			break
+		}
+	}
+
+	scheduled := &scheduledTask{
+		executeAt: at,
+		sessions:  []*Session{s},
+		task:      task,
+		meta:      meta,
+		bundle:    bundle,
+	}
+
+	s.addTask(scheduled)
+	m.taskQueue.Push(scheduled)
+
+	return &TaskHandle{task: scheduled}
+}
+
+// RepeatingTaskHandle allows cancelling a repeating scheduled task.
+type RepeatingTaskHandle struct {
+	cancelled atomic.Bool
+	session   *Session
+}
+
+// Cancel cancels the repeating task, preventing future executions.
+func (h *RepeatingTaskHandle) Cancel() {
+	if h != nil {
+		h.cancelled.Store(true)
+	}
+}
+
+// repeatingTaskWrapper wraps a task to reschedule itself after execution.
+type repeatingTaskWrapper struct {
+	inner     Runnable
+	interval  time.Duration
+	remaining int // -1 for infinite
+	handle    *RepeatingTaskHandle
+	meta      *SystemMeta
+	bundle    *Bundle
+}
+
+func (w *repeatingTaskWrapper) Run(tx *world.Tx) {
+	// Check if cancelled
+	if w.handle.cancelled.Load() {
+		return
+	}
+
+	// Execute the inner task
+	w.inner.Run(tx)
+
+	// Check if we should reschedule
+	if w.handle.cancelled.Load() {
+		return
+	}
+
+	if w.remaining > 0 {
+		w.remaining--
+	}
+
+	if w.remaining == 0 {
+		return // No more executions
+	}
+
+	// Reschedule
+	s := w.handle.session
+	if s == nil || s.closed.Load() || s.manager == nil {
+		return
+	}
+
+	scheduled := &scheduledTask{
+		executeAt: time.Now().Add(w.interval),
+		sessions:  []*Session{s},
+		task:      w,
+		meta:      w.meta,
+		bundle:    w.bundle,
+	}
+
+	s.addTask(scheduled)
+	s.manager.taskQueue.Push(scheduled)
+}
+
+// ScheduleRepeating schedules a task to run repeatedly at the given interval.
+// If times is -1, the task repeats indefinitely until cancelled.
+// If times is > 0, the task runs exactly that many times.
+// Returns a RepeatingTaskHandle that can be used to cancel future executions.
+func ScheduleRepeating(s *Session, task Runnable, interval time.Duration, times int) *RepeatingTaskHandle {
+	if s == nil || s.closed.Load() || s.manager == nil {
+		return nil
+	}
+	if times == 0 {
+		return nil
+	}
+
+	m := s.manager
+
+	taskType := reflect.TypeOf(task)
+	meta := m.getTaskMeta(taskType)
+	if meta == nil {
+		var err error
+		meta, err = analyzeSystem(taskType, nil, m.registry)
+		if err != nil {
+			return nil
+		}
+	}
+
+	var bundle *Bundle
+	for _, b := range m.bundles {
+		if b.getTaskMeta(taskType) != nil {
+			bundle = b
+			break
+		}
+	}
+
+	handle := &RepeatingTaskHandle{
+		session: s,
+	}
+
+	wrapper := &repeatingTaskWrapper{
+		inner:     task,
+		interval:  interval,
+		remaining: times,
+		handle:    handle,
+		meta:      meta,
+		bundle:    bundle,
+	}
+
+	scheduled := &scheduledTask{
+		executeAt: time.Now().Add(interval),
+		sessions:  []*Session{s},
+		task:      wrapper,
+		meta:      meta,
+		bundle:    bundle,
+	}
+
+	s.addTask(scheduled)
+	m.taskQueue.Push(scheduled)
+
+	return handle
 }

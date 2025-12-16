@@ -6,6 +6,7 @@
 //   - Declarative dependency injection via struct tags
 //   - Type-safe relations between sessions
 //   - Transaction-safe handlers, loops, and tasks
+//   - Multi-instance support for running multiple servers in one process
 //
 // # Quick Start
 //
@@ -15,12 +16,12 @@
 //	    Handler(&MyHandler{}).
 //	    Loop(&MyLoop{}, time.Second, pecs.Default)
 //
-//	pecs.NewBuilder().
+//	mngr := pecs.NewBuilder().
 //	    Bundle(bundle).
 //	    Init()
 //
 //	for p := range srv.Accept() {
-//	    sess := pecs.NewSession(p)
+//	    sess := mngr.NewSession(p)
 //	    pecs.Add(sess, &Health{Current: 100, Max: 100})
 //	    p.Handle(pecs.NewHandler(sess))
 //	}
@@ -45,6 +46,7 @@
 //	type MyHandler struct {
 //	    player.NopHandler
 //	    Session *pecs.Session
+//	    Manager *pecs.Manager      // Optional: for broadcasting, lookups
 //	    Health  *Health            // Required
 //	    Shield  *Shield `pecs:"opt"` // Optional
 //	    Config  *Config `pecs:"res"` // Resource

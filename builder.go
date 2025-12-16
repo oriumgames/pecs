@@ -79,11 +79,10 @@ func (b *Builder) getOrCreateDefaultBundle() *Bundle {
 }
 
 // Init initializes PECS with the configured settings.
-// This must be called before creating any sessions.
-// Returns the global manager for advanced usage.
+// Returns the Manager instance which should be stored and used to create sessions.
+// Multiple Manager instances can coexist for running multiple isolated servers.
 func (b *Builder) Init() *Manager {
 	m := newManager()
-	globalManager = m
 
 	// Add bundles
 	m.bundles = b.bundles

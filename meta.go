@@ -218,7 +218,8 @@ func (a *AccessMeta) Conflicts(other *AccessMeta) bool {
 }
 
 // analyzeSystem analyzes a system type and returns its metadata.
-func analyzeSystem(systemType reflect.Type, bundle *Bundle) (*SystemMeta, error) {
+// The registry parameter is used to register component types for this manager.
+func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentRegistry) (*SystemMeta, error) {
 	if systemType.Kind() == reflect.Ptr {
 		systemType = systemType.Elem()
 	}
@@ -278,6 +279,14 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle) (*SystemMeta, error)
 			continue
 		}
 
+		// Check for *Manager field
+		if field.Type == reflect.TypeOf((*Manager)(nil)) {
+			fieldMeta.Kind = KindManager
+			fieldMeta.WindowIndex = currentWindowIndex
+			meta.Fields = append(meta.Fields, fieldMeta)
+			continue
+		}
+
 		// Set window index for all fields
 		fieldMeta.WindowIndex = currentWindowIndex
 
@@ -285,7 +294,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle) (*SystemMeta, error)
 		if isPhantomType(field.Type) {
 			compType, isWithout, _ := getPhantomInfo(field.Type)
 			if compType != nil {
-				compID := componentIDFromType(compType)
+				compID := registry.register(compType)
 				if isWithout {
 					fieldMeta.Kind = KindPhantomWithout
 					meta.ExcludeMask.Set(compID)
@@ -344,7 +353,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle) (*SystemMeta, error)
 				compType = compType.Elem()
 			}
 
-			compID := componentIDFromType(compType)
+			compID := registry.register(compType)
 			fieldMeta.ComponentID = compID
 			fieldMeta.ComponentType = compType
 
@@ -422,7 +431,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle) (*SystemMeta, error)
 				continue
 			}
 
-			compID := componentIDFromType(compType)
+			compID := registry.register(compType)
 			fieldMeta.Kind = KindComponent
 			fieldMeta.ComponentID = compID
 			fieldMeta.ComponentType = compType

@@ -9,23 +9,19 @@ import (
 )
 
 // ComponentID is a unique identifier for a component type.
-// Valid IDs range from 0 to 255.
+// Valid IDs range from 0 to 255 per manager.
 type ComponentID uint8
 
-// MaxComponents is the maximum number of component types supported.
+// MaxComponents is the maximum number of component types supported per manager.
 const MaxComponents = 255
 
-// componentRegistry manages component type registration with lock-free reads.
-// Component IDs are assigned sequentially and cached for fast lookup.
-// sync.Map provides lock-free reads for the hot path (checking registered types)
-// while still allowing safe concurrent registration.
+// componentRegistry manages component type registration for a single manager.
+// Each manager has its own registry, allowing multiple isolated PECS instances.
 type componentRegistry struct {
 	// types maps reflect.Type to ComponentID using sync.Map for lock-free reads
-	// This is the hot path - components are registered once but looked up constantly
 	types sync.Map // map[reflect.Type]ComponentID
 
 	// names and typesArr store component metadata indexed by ComponentID
-	// These are written once during registration and read-only afterward
 	names    [MaxComponents]string
 	typesArr [MaxComponents]reflect.Type
 
@@ -33,67 +29,67 @@ type componentRegistry struct {
 	nextID atomic.Uint32
 
 	// arrMu protects writes to names and typesArr arrays
-	// Only needed during registration, not for normal lookups
 	arrMu sync.RWMutex
 }
 
-// globalRegistry is the singleton component registry.
-var globalRegistry = &componentRegistry{}
+// newComponentRegistry creates a new component registry.
+func newComponentRegistry() *componentRegistry {
+	return &componentRegistry{}
+}
 
-// registerComponentType registers a component type and returns its ID.
-// This is called automatically when components are first used.
-func registerComponentType(t reflect.Type) ComponentID {
-	// Fast path: lock-free read from sync.Map
-	// Most calls hit this path since types are registered early
-	if id, ok := globalRegistry.types.Load(t); ok {
+// register registers a component type and returns its ID.
+func (r *componentRegistry) register(t reflect.Type) ComponentID {
+	// Fast path: already registered
+	if id, ok := r.types.Load(t); ok {
 		return id.(ComponentID)
 	}
 
-	// Slow path: need to register new type
-	// Atomically allocate ID before attempting to register
-	// This ensures each registration attempt gets a unique ID
-	newID := ComponentID(globalRegistry.nextID.Add(1) - 1)
+	// Slow path: need to register
+	newID := ComponentID(r.nextID.Add(1) - 1)
 	if newID >= MaxComponents {
-		panic(fmt.Sprintf("pecs: component limit exceeded (max %d types)", MaxComponents))
+		panic(fmt.Sprintf("pecs: component limit exceeded (max %d types per manager)", MaxComponents))
 	}
 
-	// Try to store our ID atomically
-	// LoadOrStore ensures only one goroutine wins if multiple try simultaneously
-	actual, loaded := globalRegistry.types.LoadOrStore(t, newID)
+	actual, loaded := r.types.LoadOrStore(t, newID)
 	if loaded {
 		// Another goroutine registered this type first
 		// Use their ID instead of ours (our allocated ID is wasted, but that's rare)
 		return actual.(ComponentID)
 	}
 
-	// We won the race - store the metadata for this ID
-	// This is the only place these arrays are written for this ID
-	globalRegistry.arrMu.Lock()
-	globalRegistry.names[newID] = t.Name()
-	globalRegistry.typesArr[newID] = t
-	globalRegistry.arrMu.Unlock()
+	r.arrMu.Lock()
+	r.names[newID] = t.Name()
+	r.typesArr[newID] = t
+	r.arrMu.Unlock()
 
 	return newID
 }
 
-// getComponentID returns the ID for a registered component type.
-// Returns false if the type is not registered.
-func getComponentID(t reflect.Type) (ComponentID, bool) {
-	if id, ok := globalRegistry.types.Load(t); ok {
+// getID returns the ID for a registered component type.
+func (r *componentRegistry) getID(t reflect.Type) (ComponentID, bool) {
+	if id, ok := r.types.Load(t); ok {
 		return id.(ComponentID), true
 	}
 	return 0, false
 }
 
-// componentID returns the ComponentID for type T, registering it if needed.
-func componentID[T any]() ComponentID {
-	// Use a cached value if available via generic instantiation
-	return registerComponentType(reflect.TypeOf((*T)(nil)).Elem())
+// getName returns the name of the component with the given ID.
+func (r *componentRegistry) getName(id ComponentID) string {
+	r.arrMu.RLock()
+	defer r.arrMu.RUnlock()
+	return r.names[id]
 }
 
-// componentIDFromType returns the ComponentID for the given type.
-func componentIDFromType(t reflect.Type) ComponentID {
-	return registerComponentType(t)
+// getType returns the reflect.Type of the component with the given ID.
+func (r *componentRegistry) getType(id ComponentID) reflect.Type {
+	r.arrMu.RLock()
+	defer r.arrMu.RUnlock()
+	return r.typesArr[id]
+}
+
+// count returns the number of registered component types.
+func (r *componentRegistry) count() int {
+	return int(r.nextID.Load())
 }
 
 // Attachable is implemented by components that need initialization logic
@@ -113,14 +109,14 @@ type Detachable interface {
 // If the component implements Attachable, its Attach method is called.
 //
 // Concurrency:
-// This function is thread-safe. Since commands and forms are executed synchronously
-// with the player, it is safe to add components directly in those contexts.
+// This function is thread-safe.
 func Add[T any](s *Session, component *T) {
-	if s == nil || component == nil {
+	if s == nil || component == nil || s.manager == nil {
 		return
 	}
 
-	id := componentID[T]()
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	id := s.manager.registry.register(t)
 
 	s.mu.Lock()
 
@@ -146,7 +142,7 @@ func Add[T any](s *Session, component *T) {
 	}
 
 	s.Dispatch(ComponentAttachEvent{
-		ComponentType: reflect.TypeOf((*T)(nil)).Elem(),
+		ComponentType: t,
 	})
 }
 
@@ -154,14 +150,17 @@ func Add[T any](s *Session, component *T) {
 // If the component implements Detachable, its Detach method is called first.
 //
 // Concurrency:
-// This function is thread-safe. Since commands and forms are executed synchronously
-// with the player, it is safe to remove components directly in those contexts.
+// This function is thread-safe.
 func Remove[T any](s *Session) {
-	if s == nil {
+	if s == nil || s.manager == nil {
 		return
 	}
 
-	id := componentID[T]()
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	id, ok := s.manager.registry.getID(t)
+	if !ok {
+		return // Component type not registered, nothing to remove
+	}
 
 	s.mu.Lock()
 
@@ -183,7 +182,7 @@ func Remove[T any](s *Session) {
 	}
 
 	s.Dispatch(ComponentDetachEvent{
-		ComponentType: reflect.TypeOf((*T)(nil)).Elem(),
+		ComponentType: t,
 	})
 }
 
@@ -191,15 +190,17 @@ func Remove[T any](s *Session) {
 // Returns nil if the component is not present.
 //
 // Concurrency:
-// This function is thread-safe. Since commands and forms are executed synchronously
-// with the player, it is safe to access and modify component fields directly.
-// If accessing from a separate goroutine, use Session.Exec for synchronization.
+// This function is thread-safe.
 func Get[T any](s *Session) *T {
-	if s == nil {
+	if s == nil || s.manager == nil {
 		return nil
 	}
 
-	id := componentID[T]()
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	id, ok := s.manager.registry.getID(t)
+	if !ok {
+		return nil // Component type not registered
+	}
 
 	s.mu.RLock()
 	ptr := s.components[id]
@@ -216,17 +217,69 @@ func Get[T any](s *Session) *T {
 // Concurrency:
 // This function is fully thread-safe and can be called from any goroutine.
 func Has[T any](s *Session) bool {
-	if s == nil {
+	if s == nil || s.manager == nil {
 		return false
 	}
 
-	id := componentID[T]()
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	id, ok := s.manager.registry.getID(t)
+	if !ok {
+		return false // Component type not registered
+	}
 
 	s.mu.RLock()
 	has := s.mask.Has(id)
 	s.mu.RUnlock()
 
 	return has
+}
+
+// GetOrAdd retrieves a component from the session, or adds the default if missing.
+// Returns the existing component if present, otherwise adds defaultVal and returns it.
+//
+// Concurrency:
+// This function is thread-safe.
+func GetOrAdd[T any](s *Session, defaultVal *T) *T {
+	if s == nil || s.manager == nil {
+		return nil
+	}
+
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	id := s.manager.registry.register(t)
+
+	// Fast path: check if already exists
+	s.mu.RLock()
+	ptr := s.components[id]
+	s.mu.RUnlock()
+
+	if ptr != nil {
+		return (*T)(ptr)
+	}
+
+	// Slow path: need to add
+	s.mu.Lock()
+	// Double-check after acquiring write lock
+	ptr = s.components[id]
+	if ptr != nil {
+		s.mu.Unlock()
+		return (*T)(ptr)
+	}
+
+	// Add the default value
+	s.components[id] = unsafe.Pointer(defaultVal)
+	s.mask.Set(id)
+	s.mu.Unlock()
+
+	// Call Attach if implemented
+	if attachable, ok := any(defaultVal).(Attachable); ok {
+		attachable.Attach(s)
+	}
+
+	s.Dispatch(ComponentAttachEvent{
+		ComponentType: t,
+	})
+
+	return defaultVal
 }
 
 // getComponentUnsafe retrieves a component by ID without locking.
@@ -254,25 +307,4 @@ func (s *Session) removeComponentUnsafe(id ComponentID) unsafe.Pointer {
 	s.components[id] = nil
 	s.mask.Clear(id)
 	return ptr
-}
-
-// ComponentName returns the name of the component type with the given ID.
-// Uses read lock since names array is only written during registration.
-func ComponentName(id ComponentID) string {
-	globalRegistry.arrMu.RLock()
-	defer globalRegistry.arrMu.RUnlock()
-	return globalRegistry.names[id]
-}
-
-// ComponentType returns the reflect.Type of the component with the given ID.
-// Uses read lock since typesArr is only written during registration.
-func ComponentType(id ComponentID) reflect.Type {
-	globalRegistry.arrMu.RLock()
-	defer globalRegistry.arrMu.RUnlock()
-	return globalRegistry.typesArr[id]
-}
-
-// RegisteredComponentCount returns the number of registered component types.
-func RegisteredComponentCount() int {
-	return int(globalRegistry.nextID.Load())
 }

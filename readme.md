@@ -19,20 +19,20 @@ import (
     "time"
     "github.com/df-mc/dragonfly/server"
     "github.com/df-mc/dragonfly/server/player"
-    "github.com/pecs-framework/pecs"
+    "github.com/oriumgames/pecs"
 )
 
 func main() {
     // Create a bundle for your game logic
-    bundle := pecs.NewBundle("gameplay").
+    bund := pecs.NewBundle("gameplay").
         Resource(&Config{RegenRate: 1}).
         Handler(&DamageHandler{}).
         Loop(&RegenLoop{}, time.Second, pecs.Default)
         // Injection, Command and Task are also available.
 
-    // Initialize PECS
-    pecs.NewBuilder().
-        Bundle(bundle).
+    // Initialize PECS - store the returned manager
+    mngr := pecs.NewBuilder().
+        Bundle(bund).
         Init()
 
     // Start your Dragonfly server
@@ -41,7 +41,7 @@ func main() {
     srv.CloseOnProgramEnd()
 
     for p := range srv.Accept() {
-        sess := pecs.NewSession(p)
+        sess := mngr.NewSession(p)
         pecs.Add(sess, &Health{Current: 20, Max: 20})
         p.Handle(pecs.NewHandler(sess))
     }
@@ -55,12 +55,14 @@ func main() {
 Sessions wrap Dragonfly players with persistent identity and component storage. They survive world transfers and provide thread-safe component access.
 
 ```go
-// Create session when player joins
-sess := pecs.NewSession(p)
+// Create session when player joins (mngr is the *pecs.Manager from Init())
+sess := mngr.NewSession(p)
 
-// Retrieve session later
-sess := pecs.GetSession(p)
-sess := pecs.GetSessionByUUID(uuid)
+// Retrieve session later (via manager)
+sess := mngr.GetSession(p)
+sess := mngr.GetSessionByUUID(uuid)
+sess := mngr.GetSessionByName("PlayerName")
+sess := mngr.GetSessionByXUID(xuid)
 
 // Access player within transaction context
 if p, ok := sess.Player(tx); ok {
@@ -71,6 +73,9 @@ if p, ok := sess.Player(tx); ok {
 sess.Exec(func(tx *world.Tx, p *player.Player) {
     p.Heal(10, healing.SourceFood{})
 })
+
+// Access manager from session
+m := sess.Manager()
 ```
 
 ### Components
@@ -107,6 +112,9 @@ if pecs.Has[Health](sess) { ... }
 if health := pecs.Get[Health](sess); health != nil {
     health.Current -= 5
 }
+
+// Get or add with default value
+health := pecs.GetOrAdd(sess, &Health{Current: 100, Max: 100})
 
 // Remove component
 pecs.Remove[Frozen](sess)
@@ -146,12 +154,18 @@ Systems contain logic and declare dependencies via struct tags. PECS automatical
 | `pecs:"res,mut"` | Mutable bundle resource |
 | `pecs:"inj"` | Global injection |
 
+**Special Fields:**
+
+- `Session *pecs.Session` - Auto-injected current session
+- `Manager *pecs.Manager` - Auto-injected manager instance (useful for session lookups)
+
 **Phantom Types:**
 
 ```go
 type MyHandler struct {
     player.NopHandler
     Session *pecs.Session
+    Manager *pecs.Manager
     
     Health *Health `pecs:"mut"`
     
@@ -244,6 +258,16 @@ handle.Cancel()
 
 // Immediate dispatch (next tick)
 pecs.Dispatch(sess, &SomeTask{})
+
+// Schedule at a specific time
+pecs.ScheduleAt(sess, &DailyRewardTask{}, midnight)
+
+// Schedule repeating task (runs 5 times, every second)
+repeatHandle := pecs.ScheduleRepeating(sess, &TickTask{}, time.Second, 5)
+
+// Schedule indefinitely until cancelled (-1 for infinite)
+repeatHandle := pecs.ScheduleRepeating(sess, &HeartbeatTask{}, time.Second, -1)
+repeatHandle.Cancel() // Stop the repeating task
 ```
 
 **Multi-Session Tasks:**
@@ -346,8 +370,18 @@ func (h *MyHandler) OnDamageEvent(e DamageEvent) {
 // Dispatch to single session
 sess.Dispatch(DamageEvent{Amount: 5, Source: src})
 
-// Broadcast to all sessions
-pecs.Broadcast(DamageEvent{Amount: 10, Source: src})
+// Broadcast to all sessions (via manager)
+mngr.Broadcast(DamageEvent{Amount: 10, Source: src})
+
+// Or use session convenience method
+sess.Broadcast(DamageEvent{Amount: 10, Source: src})
+
+// Broadcast to all except certain sessions
+mngr.BroadcastExcept(ChatEvent{Message: "Hello"}, sender)
+sess.BroadcastExcept(ChatEvent{Message: "Hello"}, sess) // Exclude self
+
+// Or from within a system that has Manager injected
+h.Manager.Broadcast(DamageEvent{Amount: 10, Source: src})
 ```
 
 ### Resources & Injections
@@ -462,13 +496,15 @@ func main() {
         Handler(&PartyChatHandler{}).
         Task(&PartyDisbandTask{}, pecs.Default)
 
-    pecs.NewBuilder().
+    mngr := pecs.NewBuilder().
         Injection(&Database{}).
         Injection(&Logger{}).
         Bundle(core).
         Bundle(combat).
         Bundle(party).
         Init()
+    
+    // Use manager to create sessions...
 }
 ```
 
@@ -507,15 +543,26 @@ The scheduler respects Dragonfly's world transaction model, ensuring all systems
 
 ## API Reference
 
-### Session Functions
+### Manager Methods
 
 ```go
-pecs.NewSession(p *player.Player) *Session
-pecs.GetSession(p *player.Player) *Session
-pecs.GetSessionByUUID(id uuid.UUID) *Session
-pecs.GetSessionByHandle(h *world.EntityHandle) *Session
-pecs.AllSessions() []*Session
-pecs.SessionCount() int
+// Session management
+mngr.NewSession(p *player.Player) *Session
+mngr.GetSession(p *player.Player) *Session
+mngr.GetSessionByUUID(id uuid.UUID) *Session
+mngr.GetSessionByName(name string) *Session
+mngr.GetSessionByXUID(xuid string) *Session
+mngr.GetSessionByHandle(h *world.EntityHandle) *Session
+mngr.AllSessions() []*Session
+mngr.AllSessionsInWorld(w *world.World) []*Session
+mngr.SessionCount() int
+
+// Events
+mngr.Broadcast(event any)
+mngr.BroadcastExcept(event any, exclude ...*Session)
+
+// Timing
+mngr.TickNumber() uint64
 ```
 
 ### Component Functions
@@ -524,6 +571,7 @@ pecs.SessionCount() int
 pecs.Add[T any](s *Session, component *T)
 pecs.Remove[T any](s *Session)
 pecs.Get[T any](s *Session) *T
+pecs.GetOrAdd[T any](s *Session, defaultVal *T) *T
 pecs.Has[T any](s *Session) bool
 ```
 
@@ -532,15 +580,20 @@ pecs.Has[T any](s *Session) bool
 ```go
 pecs.Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle
 pecs.Schedule2(s1, s2 *Session, task Runnable, delay time.Duration) *TaskHandle
-pecs.Dispatch(s *Session, task Runnable)
-pecs.Dispatch2(s1, s2 *Session, task Runnable)
+pecs.ScheduleAt(s *Session, task Runnable, at time.Time) *TaskHandle
+pecs.ScheduleRepeating(s *Session, task Runnable, interval time.Duration, times int) *RepeatingTaskHandle
+pecs.Dispatch(s *Session, task Runnable) *TaskHandle
+pecs.Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle
 ```
 
 ### Event Functions
 
 ```go
 sess.Dispatch(event any)
-pecs.Broadcast(event any)
+sess.Broadcast(event any)
+sess.BroadcastExcept(event any, exclude ...*Session)
+mngr.Broadcast(event any)
+mngr.BroadcastExcept(event any, exclude ...*Session)
 ```
 
 ### Relation Functions

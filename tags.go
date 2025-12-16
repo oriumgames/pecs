@@ -24,6 +24,8 @@ type FieldKind int
 const (
 	// KindSession indicates a *Session field
 	KindSession FieldKind = iota
+	// KindManager indicates a *Manager field
+	KindManager
 	// KindComponent indicates a component field
 	KindComponent
 	// KindRelation indicates a relation traversal field
@@ -47,6 +49,8 @@ func (k FieldKind) String() string {
 	switch k {
 	case KindSession:
 		return "Session"
+	case KindManager:
+		return "Manager"
 	case KindComponent:
 		return "Component"
 	case KindRelation:

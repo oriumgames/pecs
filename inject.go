@@ -38,6 +38,12 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 		case KindSession:
 			setFieldPtr(systemPtr, field.Offset, unsafe.Pointer(currentSession))
 
+		case KindManager:
+			if manager == nil {
+				return false
+			}
+			setFieldPtr(systemPtr, field.Offset, unsafe.Pointer(manager))
+
 		case KindComponent:
 			currentSession.mu.RLock()
 			ptr := currentSession.getComponentUnsafe(field.ComponentID)
@@ -151,7 +157,7 @@ func zeroSystem(system any, meta *SystemMeta) {
 		field := &meta.Fields[i]
 
 		switch field.Kind {
-		case KindSession, KindComponent, KindRelation, KindResource, KindInjection:
+		case KindSession, KindManager, KindComponent, KindRelation, KindResource, KindInjection:
 			setFieldPtr(systemPtr, field.Offset, nil)
 
 		case KindRelationSlice:

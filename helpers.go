@@ -6,6 +6,16 @@ import (
 	"github.com/df-mc/dragonfly/server/player/form"
 )
 
+// getSessionFromPlayer extracts the session from a player's handler.
+// Returns nil if the player doesn't have a PECS SessionHandler.
+func getSessionFromPlayer(p *player.Player) *Session {
+	h, ok := p.Handler().(*SessionHandler)
+	if !ok {
+		return nil
+	}
+	return h.session
+}
+
 // Command extracts the player and session from a command source.
 // Returns (nil, nil) if the source is not a player or has no session.
 //
@@ -30,7 +40,7 @@ func Command(src cmd.Source) (*player.Player, *Session) {
 		return nil, nil
 	}
 
-	sess := GetSession(p)
+	sess := getSessionFromPlayer(p)
 	return p, sess
 }
 
@@ -57,7 +67,7 @@ func Form(sub form.Submitter) (*player.Player, *Session) {
 		return nil, nil
 	}
 
-	sess := GetSession(p)
+	sess := getSessionFromPlayer(p)
 	return p, sess
 }
 

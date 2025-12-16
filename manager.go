@@ -12,7 +12,12 @@ import (
 
 // Manager is the central PECS coordinator.
 // It manages sessions, bundles, and the scheduler.
+// Multiple Manager instances can coexist in the same process for running
+// multiple isolated servers.
 type Manager struct {
+	// registry holds component type registrations for this manager
+	registry *componentRegistry
+
 	// bundles holds all registered bundles
 	bundles []*Bundle
 
@@ -35,6 +40,10 @@ type Manager struct {
 	sessionsByName   map[string]*Session
 	sessionsByNameMu sync.RWMutex
 
+	// sessionsByXUID provides XUID-based session lookup
+	sessionsByXUID   map[string]*Session
+	sessionsByXUIDMu sync.RWMutex
+
 	// sessionsByWorld groups sessions by world for optimized scheduling
 	sessionsByWorld   map[*world.World]map[*Session]struct{}
 	sessionsByWorldMu sync.RWMutex
@@ -46,16 +55,15 @@ type Manager struct {
 	scheduler *Scheduler
 }
 
-// globalManager is the singleton manager instance.
-var globalManager *Manager
-
 // newManager creates a new manager.
 func newManager() *Manager {
 	m := &Manager{
+		registry:        newComponentRegistry(),
 		injections:      make(map[reflect.Type]unsafe.Pointer),
 		sessions:        make(map[*world.EntityHandle]*Session),
 		sessionsByUUID:  make(map[uuid.UUID]*Session),
 		sessionsByName:  make(map[string]*Session),
+		sessionsByXUID:  make(map[string]*Session),
 		sessionsByWorld: make(map[*world.World]map[*Session]struct{}),
 		taskQueue:       newTaskQueue(),
 	}
@@ -108,6 +116,12 @@ func (m *Manager) addSession(s *Session) {
 	m.sessionsByName[s.name] = s
 	m.sessionsByNameMu.Unlock()
 
+	if s.xuid != "" {
+		m.sessionsByXUIDMu.Lock()
+		m.sessionsByXUID[s.xuid] = s
+		m.sessionsByXUIDMu.Unlock()
+	}
+
 	if w := s.cachedWorld(); w != nil {
 		m.sessionsByWorldMu.Lock()
 		if m.sessionsByWorld[w] == nil {
@@ -150,6 +164,12 @@ func (m *Manager) removeSession(s *Session) {
 	delete(m.sessionsByName, s.name)
 	m.sessionsByNameMu.Unlock()
 
+	if s.xuid != "" {
+		m.sessionsByXUIDMu.Lock()
+		delete(m.sessionsByXUID, s.xuid)
+		m.sessionsByXUIDMu.Unlock()
+	}
+
 	if w := s.cachedWorld(); w != nil {
 		m.sessionsByWorldMu.Lock()
 		if m.sessionsByWorld[w] != nil {
@@ -165,34 +185,74 @@ func (m *Manager) removeSession(s *Session) {
 	m.clearAllRelationsTo(s)
 }
 
-// getSessionByHandle retrieves a session by entity handle.
+// getSessionByHandle retrieves a session by entity handle (internal).
 func (m *Manager) getSessionByHandle(h *world.EntityHandle) *Session {
 	m.sessionsMu.RLock()
 	defer m.sessionsMu.RUnlock()
 	return m.sessions[h]
 }
 
-// getSessionByUUID retrieves a session by UUID.
-func (m *Manager) getSessionByUUID(id uuid.UUID) *Session {
+// GetSession retrieves the session for a player.
+func (m *Manager) GetSession(p *player.Player) *Session {
+	return m.getSessionByHandle(p.H())
+}
+
+// GetSessionByHandle retrieves a session by entity handle.
+func (m *Manager) GetSessionByHandle(h *world.EntityHandle) *Session {
+	return m.getSessionByHandle(h)
+}
+
+// GetSessionByUUID retrieves a session by UUID.
+func (m *Manager) GetSessionByUUID(id uuid.UUID) *Session {
 	m.sessionsByUUIDMu.RLock()
 	defer m.sessionsByUUIDMu.RUnlock()
 	return m.sessionsByUUID[id]
 }
 
-// getSessionByName retrieves a session by player Name.
-func (m *Manager) getSessionByName(name string) *Session {
+// GetSessionByName retrieves a session by player Name.
+func (m *Manager) GetSessionByName(name string) *Session {
 	m.sessionsByNameMu.RLock()
 	defer m.sessionsByNameMu.RUnlock()
 	return m.sessionsByName[name]
 }
 
-// allSessions returns a slice of all active sessions.
-func (m *Manager) allSessions() []*Session {
+// GetSessionByXUID retrieves a session by player XUID.
+func (m *Manager) GetSessionByXUID(xuid string) *Session {
+	m.sessionsByXUIDMu.RLock()
+	defer m.sessionsByXUIDMu.RUnlock()
+	return m.sessionsByXUID[xuid]
+}
+
+// AllSessions returns a slice of all active sessions.
+func (m *Manager) AllSessions() []*Session {
 	m.sessionsMu.RLock()
 	defer m.sessionsMu.RUnlock()
 
 	sessions := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
+		if !s.closed.Load() {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions
+}
+
+// AllSessionsInWorld returns all active sessions in the specified world.
+func (m *Manager) AllSessionsInWorld(w *world.World) []*Session {
+	if w == nil {
+		return nil
+	}
+
+	m.sessionsByWorldMu.RLock()
+	defer m.sessionsByWorldMu.RUnlock()
+
+	set := m.sessionsByWorld[w]
+	if set == nil {
+		return nil
+	}
+
+	sessions := make([]*Session, 0, len(set))
+	for s := range set {
 		if !s.closed.Load() {
 			sessions = append(sessions, s)
 		}
@@ -209,9 +269,30 @@ func (m *Manager) SessionCount() int {
 
 // Broadcast dispatches an event to all active sessions.
 func (m *Manager) Broadcast(event any) {
-	sessions := m.allSessions()
+	sessions := m.AllSessions()
 	for _, s := range sessions {
 		s.Dispatch(event)
+	}
+}
+
+// BroadcastExcept dispatches an event to all active sessions except the specified ones.
+func (m *Manager) BroadcastExcept(event any, exclude ...*Session) {
+	if len(exclude) == 0 {
+		m.Broadcast(event)
+		return
+	}
+
+	// Build exclusion set for O(1) lookup
+	excludeSet := make(map[*Session]struct{}, len(exclude))
+	for _, s := range exclude {
+		excludeSet[s] = struct{}{}
+	}
+
+	sessions := m.AllSessions()
+	for _, s := range sessions {
+		if _, excluded := excludeSet[s]; !excluded {
+			s.Dispatch(event)
+		}
 	}
 }
 
@@ -227,14 +308,6 @@ func (m *Manager) clearAllRelationsTo(target *Session) {
 	for _, s := range sessions {
 		s.clearRelationsTo(target)
 	}
-}
-
-// GetSessionByName retrieves a session by the player's name.
-func GetSessionByName(name string) *Session {
-	if globalManager == nil {
-		return nil
-	}
-	return globalManager.getSessionByName(name)
 }
 
 // groupedSessions returns a snapshot of sessions grouped by world.
@@ -280,7 +353,7 @@ func (m *Manager) getTaskMeta(t reflect.Type) *SystemMeta {
 // build initializes all bundles and systems.
 func (m *Manager) build() error {
 	for _, b := range m.bundles {
-		if err := b.build(); err != nil {
+		if err := b.build(m.registry); err != nil {
 			return err
 		}
 
@@ -328,39 +401,28 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// Global returns the global manager instance.
-func Global() *Manager {
-	return globalManager
-}
-
-// Broadcast dispatches an event to all active sessions via the global manager.
-func Broadcast(event any) {
-	if globalManager != nil {
-		globalManager.Broadcast(event)
-	}
-}
-
-// AllSessions returns a slice of all active sessions.
-// This is useful for broadcasting or iterating all players.
-func AllSessions() []*Session {
-	if globalManager == nil {
-		return nil
-	}
-	return globalManager.allSessions()
-}
-
-// SessionCount returns the number of active sessions.
-func SessionCount() int {
-	if globalManager == nil {
-		return 0
-	}
-	return globalManager.SessionCount()
-}
-
 // TickNumber returns the current scheduler tick number.
-func TickNumber() uint64 {
-	if globalManager == nil || globalManager.scheduler == nil {
+func (m *Manager) TickNumber() uint64 {
+	if m.scheduler == nil {
 		return 0
 	}
-	return globalManager.scheduler.tickNumber
+	return m.scheduler.tickNumber
+}
+
+// NewSession creates a new session for a player.
+// This should be called when a player joins and the returned session
+// should be passed to player.Handle() wrapped with NewHandler().
+func (m *Manager) NewSession(p *player.Player) *Session {
+	s := &Session{
+		handle:  p.H(),
+		uuid:    p.UUID(),
+		name:    p.Name(),
+		xuid:    p.XUID(),
+		manager: m,
+	}
+
+	s.updateWorldCache(p.Tx().World())
+	m.addSession(s)
+
+	return s
 }

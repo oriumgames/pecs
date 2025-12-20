@@ -343,10 +343,9 @@ func (h *SessionHandler) HandleCommandExecution(ctx *player.Context, command cmd
 	h.executeHandlers(func(ph Handler) { ph.HandleCommandExecution(ctx, command, args) })
 }
 
-// HandleQuit handles a player joining the server.
+// HandleJoin handles a player joining the server.
 func (h *SessionHandler) HandleJoin(p *player.Player) {
 	h.executeHandlers(func(ph Handler) { ph.HandleJoin(p) })
-	defer h.session.close()
 }
 
 // HandleQuit handles a player quitting the server.

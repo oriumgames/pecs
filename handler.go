@@ -67,11 +67,9 @@ func (h *SessionHandler) Session() *Session {
 }
 
 // NewHandler creates a new Handler for the given session.
-func NewHandler(s *Session) Handler {
+func NewHandler(s *Session, p *player.Player) Handler {
 	h := &SessionHandler{session: s}
-	s.Exec(func(tx *world.Tx, p *player.Player) {
-		h.HandleJoin(p)
-	})
+	h.HandleJoin(p)
 	return h
 }
 

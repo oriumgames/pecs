@@ -43,7 +43,7 @@ func main() {
     for p := range srv.Accept() {
         sess := mngr.NewSession(p)
         pecs.Add(sess, &Health{Current: 20, Max: 20})
-        p.Handle(pecs.NewHandler(sess))
+        p.Handle(pecs.NewHandler(sess, p))
     }
 }
 ```

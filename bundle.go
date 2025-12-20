@@ -7,7 +7,6 @@ import (
 	"unsafe"
 
 	"github.com/df-mc/dragonfly/server/cmd"
-	"github.com/df-mc/dragonfly/server/player"
 )
 
 // Bundle groups related systems, handlers, and resources together.
@@ -44,7 +43,7 @@ type Bundle struct {
 
 // handlerRegistration holds a handler registration.
 type handlerRegistration struct {
-	handler player.Handler
+	handler Handler
 }
 
 // loopRegistration holds a loop system registration.
@@ -121,8 +120,8 @@ func (b *Bundle) Command(command cmd.Command) *Bundle {
 }
 
 // Handler registers a handler for this bundle.
-// Handlers implement player.Handler and respond to Dragonfly events.
-func (b *Bundle) Handler(h player.Handler) *Bundle {
+// Handlers implement Handler and respond to Dragonfly events.
+func (b *Bundle) Handler(h Handler) *Bundle {
 	b.handlers = append(b.handlers, handlerRegistration{
 		handler: h,
 	})

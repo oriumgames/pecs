@@ -163,7 +163,7 @@ Systems contain logic and declare dependencies via struct tags. PECS automatical
 
 ```go
 type MyHandler struct {
-    player.NopHandler
+    pecs.NopHandler
     Session *pecs.Session
     Manager *pecs.Manager
     
@@ -176,11 +176,11 @@ type MyHandler struct {
 
 ### Handlers
 
-Handlers respond to Dragonfly player events. They embed `player.NopHandler` and override methods.
+Handlers respond to Dragonfly player events. They embed `pecs.NopHandler` and override methods.
 
 ```go
 type DamageHandler struct {
-    player.NopHandler
+    pecs.NopHandler
     Session *pecs.Session
     Health  *Health  `pecs:"mut"`
     GodMode *GodMode `pecs:"opt"`

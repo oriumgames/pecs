@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/df-mc/dragonfly/server/cmd"
-	"github.com/df-mc/dragonfly/server/player"
 )
 
 // Builder configures PECS before initialization.
@@ -46,7 +45,7 @@ func (b *Builder) Command(command cmd.Command) *Builder {
 }
 
 // Handler adds a handler to an implicit default bundle.
-func (b *Builder) Handler(h player.Handler) *Builder {
+func (b *Builder) Handler(h Handler) *Builder {
 	bundle := b.getOrCreateDefaultBundle()
 	bundle.Handler(h)
 	return b

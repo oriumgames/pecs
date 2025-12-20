@@ -17,7 +17,7 @@ import (
 // and stores all components attached to the player.
 //
 // Sessions are created when players join and destroyed when they leave.
-// They implement player.Handler to intercept all player events.
+// They implement pecs.Handler to intercept all player events.
 type Session struct {
 	// handle is the persistent entity handle for the player
 	handle *world.EntityHandle

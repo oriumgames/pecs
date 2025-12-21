@@ -114,7 +114,6 @@ func main() {
         }
 
         pecs.Add(sess, &Health{Current: 20, Max: 20})
-
         p.Handle(pecs.NewHandler(sess, p))
     }
 }

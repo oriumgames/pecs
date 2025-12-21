@@ -52,6 +52,10 @@ type Session struct {
 	// pendingTasks holds scheduled tasks for this session
 	pendingTasks []*scheduledTask
 	taskMu       sync.Mutex
+
+	// providerSubs holds active provider subscriptions for auto-updates
+	providerSubs   []Subscription
+	providerSubsMu sync.Mutex
 }
 
 // Handle returns the underlying EntityHandle.
@@ -207,6 +211,18 @@ func (s *Session) close() {
 		return // Already closed
 	}
 
+	// Close all provider subscriptions
+	s.providerSubsMu.Lock()
+	subs := s.providerSubs
+	s.providerSubs = nil
+	s.providerSubsMu.Unlock()
+
+	for _, sub := range subs {
+		if sub != nil {
+			_ = sub.Close()
+		}
+	}
+
 	// Cancel all pending tasks
 	s.taskMu.Lock()
 	tasks := s.pendingTasks
@@ -283,6 +299,16 @@ func (s *Session) addTask(task *scheduledTask) {
 	s.taskMu.Lock()
 	s.pendingTasks = append(s.pendingTasks, task)
 	s.taskMu.Unlock()
+}
+
+// addProviderSub adds a provider subscription to be cleaned up on session close.
+func (s *Session) addProviderSub(sub Subscription) {
+	if sub == nil {
+		return
+	}
+	s.providerSubsMu.Lock()
+	s.providerSubs = append(s.providerSubs, sub)
+	s.providerSubsMu.Unlock()
 }
 
 // removeTask removes a scheduled task from this session.

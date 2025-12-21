@@ -1,8 +1,10 @@
 package pecs
 
 import (
+	"context"
 	"reflect"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/df-mc/dragonfly/server/player"
@@ -523,6 +525,7 @@ func (m *Manager) TickNumber() uint64 {
 // NewSession creates a new session for a player.
 // This should be called when a player joins and the returned session
 // should be passed to player.Handle() wrapped with NewHandler().
+// Automatically fetches data from registered PlayerProviders and subscribes to updates.
 func (m *Manager) NewSession(p *player.Player) *Session {
 	s := &Session{
 		handle:  p.H(),
@@ -535,5 +538,95 @@ func (m *Manager) NewSession(p *player.Player) *Session {
 	s.updateWorldCache(p.Tx().World())
 	m.addSession(s)
 
+	// Auto-populate from registered providers
+	m.initSessionFromProviders(s)
+
 	return s
+}
+
+// initSessionFromProviders fetches initial data from all registered providers
+// and subscribes to updates for the local player.
+func (m *Manager) initSessionFromProviders(s *Session) {
+	playerID := s.xuid
+	if playerID == "" {
+		return
+	}
+
+	providers := m.peerCache.getAllProviders()
+	if len(providers) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, entry := range providers {
+		provider := entry.provider
+
+		// Fetch initial data
+		components, err := provider.FetchPlayer(ctx, playerID)
+		if err != nil || len(components) == 0 {
+			continue
+		}
+
+		// Add fetched components to session
+		for _, comp := range components {
+			if comp == nil {
+				continue
+			}
+			m.addComponentToSession(s, comp)
+		}
+
+		// Subscribe to updates
+		updates := make(chan PlayerUpdate, 16)
+		sub, err := provider.SubscribePlayer(context.Background(), playerID, updates)
+		if err != nil {
+			close(updates)
+			continue
+		}
+
+		s.addProviderSub(sub)
+		go m.processProviderUpdates(s, updates)
+	}
+}
+
+// addComponentToSession adds a component of any type to the session using reflection.
+func (m *Manager) addComponentToSession(s *Session, component any) {
+	val := reflect.ValueOf(component)
+	if val.Kind() != reflect.Ptr {
+		return
+	}
+
+	t := val.Type().Elem()
+	id := m.registry.register(t)
+
+	s.mu.Lock()
+	oldPtr := s.components[id]
+	if oldPtr != nil {
+		// Update in place
+		size := t.Size()
+		oldBytes := unsafe.Slice((*byte)(oldPtr), size)
+		newBytes := unsafe.Slice((*byte)(val.UnsafePointer()), size)
+		copy(oldBytes, newBytes)
+		s.mu.Unlock()
+		return
+	}
+
+	s.components[id] = val.UnsafePointer()
+	s.mask.Set(id)
+	s.mu.Unlock()
+}
+
+// processProviderUpdates handles real-time updates from a provider subscription.
+func (m *Manager) processProviderUpdates(s *Session, updates <-chan PlayerUpdate) {
+	for update := range updates {
+		if s.closed.Load() {
+			return
+		}
+		if update.Data == nil {
+			// Component removal - not implemented yet
+			continue
+		}
+		m.addComponentToSession(s, update.Data)
+	}
 }

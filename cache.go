@@ -102,6 +102,15 @@ func (pc *peerCache) getProviders(componentType reflect.Type) []PlayerProvider {
 	return pc.providerIndex[componentType]
 }
 
+// getAllProviders returns all registered provider entries.
+func (pc *peerCache) getAllProviders() []playerProviderEntry {
+	pc.providersMu.RLock()
+	defer pc.providersMu.RUnlock()
+	result := make([]playerProviderEntry, len(pc.providers))
+	copy(result, pc.providers)
+	return result
+}
+
 // resolve gets or creates a cache entry for a player and returns their component.
 // Returns nil if the player doesn't have the component or resolution fails.
 func (pc *peerCache) resolve(playerID string, componentType reflect.Type) unsafe.Pointer {

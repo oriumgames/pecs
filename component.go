@@ -105,8 +105,7 @@ type Detachable interface {
 }
 
 // Add attaches a component to the session.
-// If a component of this type already exists, its data is updated in-place
-// so that all injected pointers automatically see the new values.
+// If a component of this type already exists, it is replaced.
 // If the component implements Attachable, its Attach method is called.
 //
 // Concurrency:
@@ -121,28 +120,25 @@ func Add[T any](s *Session, component *T) {
 
 	s.mu.Lock()
 
-	// Check for existing component
 	oldPtr := s.components[id]
 	if oldPtr != nil {
-		// Update existing component in-place so all injected pointers see the new value
-		existing := (*T)(oldPtr)
-		*existing = *component
+		// Update existing component in place so all existing pointers
+		// (e.g., already-injected handler fields) see the new data
+		size := unsafe.Sizeof(*component)
+		oldBytes := unsafe.Slice((*byte)(oldPtr), size)
+		newBytes := unsafe.Slice((*byte)(unsafe.Pointer(component)), size)
+		copy(oldBytes, newBytes)
 		s.mu.Unlock()
-
-		// Dispatch update event but don't call Attach again
-		s.Dispatch(ComponentAttachEvent{
-			ComponentType: t,
-		})
 		return
 	}
 
-	// No existing component - store new one
+	// Store new component
 	s.components[id] = unsafe.Pointer(component)
 	s.mask.Set(id)
 
 	s.mu.Unlock()
 
-	// Call Attach if implemented
+	// Call Attach if implemented (only for new components)
 	if attachable, ok := any(component).(Attachable); ok {
 		attachable.Attach(s)
 	}

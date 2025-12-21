@@ -107,7 +107,7 @@ func main() {
     srv.Listen()
 
     for p := range srv.Accept() {
-        sess := mngr.NewSession(p)
+        sess, err := mngr.NewSession(p)
         if err != nil {
             p.Disconnect("failed to initialize session")
             continue

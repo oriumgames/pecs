@@ -796,6 +796,13 @@ Providers fetch and sync data from your backend services. Implement `PlayerProvi
 **PlayerProvider:**
 
 ```go
+When a player joins, PECS automatically queries all registered `PlayerProvider`s. If data is returned,
+components are added to the session and kept in sync via subscriptions. This removes the need for
+manual data fetching handlers.
+
+You can mark a provider as required using `pecs.WithRequired(true)`. If a required provider fails to
+fetch data during session creation, `NewSession` will return an error.
+
 type PlayerProvider interface {
     // Unique name for logging
     Name() string
@@ -1211,7 +1218,7 @@ func (h *MyHandler) HandleChat(ctx *player.Context, msg *string) {
 ```go
 // Session management
 mngr.NewSession(p *player.Player) *Session
-mngr.GetSession(p *player.Player) *Session
+mngr.NewSession(p *player.Player) (*Session, error)
 mngr.GetSessionByUUID(id uuid.UUID) *Session
 mngr.GetSessionByName(name string) *Session
 mngr.GetSessionByXUID(xuid string) *Session
@@ -1343,6 +1350,9 @@ pecs.MustCommand(src cmd.Source) (*player.Player, *Session)
 pecs.MustForm(sub form.Submitter) (*player.Player, *Session)
 pecs.NewHandler(sess *Session, p *player.Player) Handler
 ```
+
+- `pecs.Injection[T](sess)`: Retrieve a global injection from a session.
+- `pecs.ManagerInjection[T](mngr)`: Retrieve a global injection from a manager.
 
 ### Builder
 

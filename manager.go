@@ -107,6 +107,29 @@ func (m *Manager) getInjection(t reflect.Type) unsafe.Pointer {
 	return nil
 }
 
+// ManagerInjection retrieves a global injection from the manager.
+// Returns nil if the injection is not found.
+func ManagerInjection[T any](m *Manager) *T {
+	if m == nil {
+		return nil
+	}
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	ptr := m.getInjection(t)
+	if ptr == nil {
+		return nil
+	}
+	return (*T)(ptr)
+}
+
+// Injection retrieves a global injection via the session's manager.
+// Returns nil if the session or injection is not found.
+func Injection[T any](s *Session) *T {
+	if s == nil || s.manager == nil {
+		return nil
+	}
+	return ManagerInjection[T](s.manager)
+}
+
 // addSession registers a session with the manager.
 func (m *Manager) addSession(s *Session) {
 	m.sessionsMu.Lock()

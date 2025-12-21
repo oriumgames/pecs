@@ -31,9 +31,12 @@ type Bundle struct {
 	resources   map[reflect.Type]unsafe.Pointer
 	resourcesMu sync.RWMutex
 
-	// injections holds bundle-level injections (in addition to global)
-	injections   map[reflect.Type]unsafe.Pointer
-	injectionsMu sync.RWMutex
+	// Injections holds bundle-level injections (in addition to global)
+	Injections []any
+
+	// Federation providers
+	playerProviders []playerProviderRegistration
+	entityProviders []entityProviderRegistration
 
 	// meta holds computed metadata for systems
 	handlerMeta []*SystemMeta
@@ -67,10 +70,9 @@ type commandRegistration struct {
 // NewBundle creates a new bundle with the given name.
 func NewBundle(name string) *Bundle {
 	return &Bundle{
-		name:       name,
-		resources:  make(map[reflect.Type]unsafe.Pointer),
-		injections: make(map[reflect.Type]unsafe.Pointer),
-		taskMeta:   make(map[reflect.Type]*SystemMeta),
+		name:      name,
+		resources: make(map[reflect.Type]unsafe.Pointer),
+		taskMeta:  make(map[reflect.Type]*SystemMeta),
 	}
 }
 
@@ -82,15 +84,7 @@ func (b *Bundle) Name() string {
 // Injection registers a bundle-level injection.
 // These are available to all systems in this bundle.
 func (b *Bundle) Injection(inj any) *Bundle {
-	t := reflect.TypeOf(inj)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	b.injectionsMu.Lock()
-	b.injections[t] = unsafe.Pointer(reflect.ValueOf(inj).Pointer())
-	b.injectionsMu.Unlock()
-
+	b.Injections = append(b.Injections, inj)
 	return b
 }
 
@@ -149,18 +143,23 @@ func (b *Bundle) Task(sys Runnable, stage Stage) *Bundle {
 	return b
 }
 
+// PlayerProvider registers a provider for Peer[T] resolution.
+func (b *Bundle) PlayerProvider(p PlayerProvider, opts ...ProviderOption) *Bundle {
+	b.playerProviders = append(b.playerProviders, playerProviderRegistration{p, opts})
+	return b
+}
+
+// EntityProvider registers a provider for Shared[T] resolution.
+func (b *Bundle) EntityProvider(p EntityProvider, opts ...ProviderOption) *Bundle {
+	b.entityProviders = append(b.entityProviders, entityProviderRegistration{p, opts})
+	return b
+}
+
 // getResource retrieves a resource by type.
 func (b *Bundle) getResource(t reflect.Type) unsafe.Pointer {
 	b.resourcesMu.RLock()
 	defer b.resourcesMu.RUnlock()
 	return b.resources[t]
-}
-
-// getInjection retrieves a bundle injection by type.
-func (b *Bundle) getInjection(t reflect.Type) unsafe.Pointer {
-	b.injectionsMu.RLock()
-	defer b.injectionsMu.RUnlock()
-	return b.injections[t]
 }
 
 // build analyzes all systems and computes metadata.

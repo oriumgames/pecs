@@ -100,14 +100,6 @@ func (m *Manager) getInjection(t reflect.Type) unsafe.Pointer {
 	if ptr, ok := m.injections[t]; ok {
 		return ptr
 	}
-
-	// Also check bundle injections
-	for _, b := range m.bundles {
-		if ptr := b.getInjection(t); ptr != nil {
-			return ptr
-		}
-	}
-
 	return nil
 }
 

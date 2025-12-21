@@ -42,13 +42,6 @@ func (b *Builder) Injection(inj any) *Builder {
 	return b
 }
 
-// Resource adds a resource to an implicit default bundle.
-func (b *Builder) Resource(res any) *Builder {
-	bundle := b.getOrCreateDefaultBundle()
-	bundle.Resource(res)
-	return b
-}
-
 // Command adds a command to an implicit default bundle.
 func (b *Builder) Command(command cmd.Command) *Builder {
 	bundle := b.getOrCreateDefaultBundle()
@@ -125,12 +118,27 @@ func (b *Builder) Init() *Manager {
 		m.addInjection(inj)
 	}
 
+	for _, bundle := range m.bundles {
+		for _, inj := range bundle.Injections {
+			m.addInjection(inj)
+		}
+	}
+
 	// Register federation providers
 	for _, reg := range b.playerProviders {
 		m.RegisterPlayerProvider(reg.provider, reg.options...)
 	}
 	for _, reg := range b.entityProviders {
 		m.RegisterEntityProvider(reg.provider, reg.options...)
+	}
+
+	for _, bundle := range m.bundles {
+		for _, reg := range bundle.playerProviders {
+			m.RegisterPlayerProvider(reg.provider, reg.options...)
+		}
+		for _, reg := range bundle.entityProviders {
+			m.RegisterEntityProvider(reg.provider, reg.options...)
+		}
 	}
 
 	// Build all systems
@@ -142,10 +150,4 @@ func (b *Builder) Init() *Manager {
 	m.Start()
 
 	return m
-}
-
-// MustInit is like Init but panics on error.
-// This is a convenience method for simple setups.
-func (b *Builder) MustInit() *Manager {
-	return b.Init()
 }

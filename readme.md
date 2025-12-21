@@ -1,14 +1,54 @@
-# pecs
+# PECS
 
 **Player Entity Component System for Dragonfly**
 
-pecs is designed for [Dragonfly](https://github.com/df-mc/dragonfly) Minecraft servers. It provides a structured approach to game logic through handlers, components, systems, and dependency injection while respecting Dragonfly's transaction-based world model.
+PECS is a game architecture framework designed for [Dragonfly](https://github.com/df-mc/dragonfly) Minecraft servers. It provides structured game logic through handlers, components, systems, and dependency injection while respecting Dragonfly's transaction-based world model.
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+  - [Sessions](#sessions)
+  - [Components](#components)
+  - [Systems](#systems)
+  - [Handlers](#handlers)
+  - [Loops](#loops)
+  - [Tasks](#tasks)
+- [Dependency Injection](#dependency-injection)
+  - [Tag Reference](#tag-reference)
+  - [Phantom Types](#phantom-types)
+  - [Resources](#resources)
+  - [Injections](#injections)
+- [Relations](#relations)
+  - [Local Relations](#local-relations)
+  - [Relation Resolution](#relation-resolution)
+- [Federation](#federation)
+  - [Overview](#federation-overview)
+  - [Peer References](#peer-references)
+  - [Shared References](#shared-references)
+  - [Providers](#providers)
+  - [When to Use Each Type](#when-to-use-each-type)
+- [Events](#events)
+- [Commands & Forms](#commands--forms)
+- [Bundle Organization](#bundle-organization)
+- [Execution Model](#execution-model)
+  - [Stages](#stages)
+  - [Parallelism](#parallelism)
+  - [Transaction Context](#transaction-context)
+- [Concurrency](#concurrency)
+- [API Reference](#api-reference)
+- [Acknowledgements](#acknowledgements)
+
+---
 
 ## Installation
 
 ```bash
 go get github.com/oriumgames/pecs
 ```
+
+---
 
 ## Quick Start
 
@@ -22,23 +62,49 @@ import (
     "github.com/oriumgames/pecs"
 )
 
+// Components are plain structs
+type Health struct {
+    Current int
+    Max     int
+}
+
+// Handlers respond to player events
+type DamageHandler struct {
+    pecs.NopHandler
+    Session *pecs.Session
+    Health  *Health `pecs:"mut"`
+}
+
+func (h *DamageHandler) HandleHurt(ctx *player.Context, dmg *float64, immune *bool, immunity *time.Duration, src world.DamageSource) {
+    h.Health.Current -= int(*dmg)
+}
+
+// Loops run at fixed intervals
+type RegenLoop struct {
+    Session *pecs.Session
+    Health  *Health `pecs:"mut"`
+}
+
+func (l *RegenLoop) Run(tx *world.Tx) {
+    if l.Health.Current < l.Health.Max {
+        l.Health.Current++
+    }
+}
+
 func main() {
     // Create a bundle for your game logic
-    bund := pecs.NewBundle("gameplay").
-        Resource(&Config{RegenRate: 1}).
+    bundle := pecs.NewBundle("gameplay").
         Handler(&DamageHandler{}).
         Loop(&RegenLoop{}, time.Second, pecs.Default)
-        // Injection, Command and Task are also available.
 
-    // Initialize PECS - store the returned manager
+    // Initialize PECS
     mngr := pecs.NewBuilder().
-        Bundle(bund).
+        Bundle(bundle).
         Init()
 
     // Start your Dragonfly server
-    srv := // start a new server here
+    srv := server.New()
     srv.Listen()
-    srv.CloseOnProgramEnd()
 
     for p := range srv.Accept() {
         sess := mngr.NewSession(p)
@@ -48,6 +114,8 @@ func main() {
 }
 ```
 
+---
+
 ## Core Concepts
 
 ### Sessions
@@ -55,14 +123,17 @@ func main() {
 Sessions wrap Dragonfly players with persistent identity and component storage. They survive world transfers and provide thread-safe component access.
 
 ```go
-// Create session when player joins (mngr is the *pecs.Manager from Init())
+// Create session when player joins
 sess := mngr.NewSession(p)
 
-// Retrieve session later (via manager)
+// Retrieve session later
 sess := mngr.GetSession(p)
 sess := mngr.GetSessionByUUID(uuid)
 sess := mngr.GetSessionByName("PlayerName")
 sess := mngr.GetSessionByXUID(xuid)
+
+// Get persistent identifier (XUID) - used for cross-server references
+id := sess.ID()
 
 // Access player within transaction context
 if p, ok := sess.Player(tx); ok {
@@ -74,13 +145,21 @@ sess.Exec(func(tx *world.Tx, p *player.Player) {
     p.Heal(10, healing.SourceFood{})
 })
 
+// Check session state
+if sess.Closed() {
+    return
+}
+
+// Get the current world
+world := sess.World()
+
 // Access manager from session
 m := sess.Manager()
 ```
 
 ### Components
 
-Components are plain structs that hold data. No interfaces required.
+Components are plain Go structs that hold data. No interfaces required.
 
 ```go
 type Health struct {
@@ -90,23 +169,25 @@ type Health struct {
 
 type Frozen struct {
     Until    time.Time
-    FrozenBy *pecs.Session
+    FrozenBy string
 }
 
-type PartyLeader struct {
-    Name    string
-    Members pecs.RelationSet[PartyMember]
+type Inventory struct {
+    Items []item.Stack
+    Gold  int
 }
 ```
 
-**Operations:**
+**Component Operations:**
 
 ```go
 // Add or replace component
 pecs.Add(sess, &Health{Current: 20, Max: 20})
 
 // Check existence
-if pecs.Has[Health](sess) { ... }
+if pecs.Has[Health](sess) {
+    // Has health component
+}
 
 // Get component (nil if missing)
 if health := pecs.Get[Health](sess); health != nil {
@@ -122,6 +203,8 @@ pecs.Remove[Frozen](sess)
 
 **Lifecycle Hooks:**
 
+Components can implement `Attachable` and/or `Detachable` for lifecycle callbacks:
+
 ```go
 type Tracker struct {
     StartTime time.Time
@@ -129,54 +212,29 @@ type Tracker struct {
 
 func (t *Tracker) Attach(s *pecs.Session) {
     t.StartTime = time.Now()
-    fmt.Println("Tracker attached")
+    fmt.Println("Tracker attached to", s.Name())
 }
 
 func (t *Tracker) Detach(s *pecs.Session) {
-    fmt.Printf("Tracked for %v\n", time.Since(t.StartTime))
+    duration := time.Since(t.StartTime)
+    fmt.Printf("Player %s tracked for %v\n", s.Name(), duration)
 }
 ```
 
 ### Systems
 
-Systems contain logic and declare dependencies via struct tags. PECS automatically injects the required data.
+Systems contain game logic and declare dependencies via struct tags. PECS automatically injects the required data before execution.
 
-**Tag Reference:**
+There are three types of systems:
+- **Handlers** - React to player events
+- **Loops** - Run at fixed intervals
+- **Tasks** - One-shot delayed execution
 
-| Tag | Description |
-|-----|-------------|
-| (none) | Required read-only component |
-| `pecs:"mut"` | Required mutable component |
-| `pecs:"opt"` | Optional component (nil if missing) |
-| `pecs:"opt,mut"` | Optional mutable component |
-| `pecs:"rel"` | Relation traversal |
-| `pecs:"res"` | Bundle resource |
-| `pecs:"res,mut"` | Mutable bundle resource |
-| `pecs:"inj"` | Global injection |
-
-**Special Fields:**
-
-- `Session *pecs.Session` - Auto-injected current session
-- `Manager *pecs.Manager` - Auto-injected manager instance (useful for session lookups)
-
-**Phantom Types:**
-
-```go
-type MyHandler struct {
-    pecs.NopHandler
-    Session *pecs.Session
-    Manager *pecs.Manager
-    
-    Health *Health `pecs:"mut"`
-    
-    _ pecs.With[Premium]      // Only runs if Premium exists
-    _ pecs.Without[Spectator] // Skip if Spectator exists
-}
-```
+All systems share the same dependency injection model.
 
 ### Handlers
 
-Handlers respond to Dragonfly player events. They embed `pecs.NopHandler` and override methods.
+Handlers respond to Dragonfly player events. Embed `pecs.NopHandler` and override the methods you need.
 
 ```go
 type DamageHandler struct {
@@ -193,17 +251,29 @@ func (h *DamageHandler) HandleHurt(ctx *player.Context, dmg *float64, immune *bo
     }
     h.Health.Current -= int(*dmg)
     if h.Health.Current <= 0 {
-        ctx.Val().Message("§cYou died!")
+        ctx.Val().Kill(src)
     }
 }
 
-// Register
+func (h *DamageHandler) HandleDeath(p *player.Player, src world.DamageSource, keepInv *bool) {
+    p.Message("You died!")
+}
+
+// Register with bundle
 bundle.Handler(&DamageHandler{})
+```
+
+Handlers also support the special `HandleJoin` method which is called when a session is first created:
+
+```go
+func (h *WelcomeHandler) HandleJoin(p *player.Player) {
+    p.Message("Welcome to the server!")
+}
 ```
 
 ### Loops
 
-Loops run at fixed intervals for all matching sessions.
+Loops run at fixed intervals for all sessions that match their component requirements.
 
 ```go
 type RegenLoop struct {
@@ -211,7 +281,8 @@ type RegenLoop struct {
     Health  *Health `pecs:"mut"`
     Config  *Config `pecs:"res"`
     
-    _ pecs.Without[Combat] // Don't regen in combat
+    _ pecs.Without[Combat]    // Don't regen while in combat
+    _ pecs.Without[Spectator] // Spectators don't regen
 }
 
 func (l *RegenLoop) Run(tx *world.Tx) {
@@ -223,19 +294,22 @@ func (l *RegenLoop) Run(tx *world.Tx) {
     }
 }
 
-// Register (runs every second, in Default stage)
+// Register: runs every second in Default stage
 bundle.Loop(&RegenLoop{}, time.Second, pecs.Default)
+
+// Run every tick (interval of 0)
+bundle.Loop(&TickLoop{}, 0, pecs.Before)
 ```
 
 ### Tasks
 
-Tasks are one-shot delayed systems.
+Tasks are one-shot systems scheduled for future execution.
 
 ```go
 type TeleportTask struct {
     Session *pecs.Session
     
-    // Payload
+    // Payload fields - set when scheduling
     Destination mgl64.Vec3
     Message     string
 }
@@ -247,10 +321,17 @@ func (t *TeleportTask) Run(tx *world.Tx) {
     }
 }
 
-// Schedule for 5 seconds from now
+// Register task type with bundle (enables pooling optimization)
+bundle.Task(&TeleportTask{}, pecs.Default)
+```
+
+**Scheduling Tasks:**
+
+```go
+// Schedule for future execution
 handle := pecs.Schedule(sess, &TeleportTask{
     Destination: mgl64.Vec3{0, 100, 0},
-    Message:     "§aWelcome to spawn!",
+    Message:     "Welcome to spawn!",
 }, 5*time.Second)
 
 // Cancel if needed
@@ -259,172 +340,671 @@ handle.Cancel()
 // Immediate dispatch (next tick)
 pecs.Dispatch(sess, &SomeTask{})
 
-// Schedule at a specific time
+// Schedule at specific time
 pecs.ScheduleAt(sess, &DailyRewardTask{}, midnight)
 
-// Schedule repeating task (runs 5 times, every second)
+// Repeating task (runs 5 times, every second)
 repeatHandle := pecs.ScheduleRepeating(sess, &TickTask{}, time.Second, 5)
 
-// Schedule indefinitely until cancelled (-1 for infinite)
+// Infinite repeating until cancelled
 repeatHandle := pecs.ScheduleRepeating(sess, &HeartbeatTask{}, time.Second, -1)
-repeatHandle.Cancel() // Stop the repeating task
+repeatHandle.Cancel()
 ```
 
 **Multi-Session Tasks:**
 
+Tasks can involve two sessions (must be in the same world):
+
 ```go
 type TradeTask struct {
-    Session  *pecs.Session   // First player
-    Offer1 item.Stack
+    Session  *pecs.Session  // First player (buyer)
+    Buyer    *Inventory `pecs:"mut"`
     
-    Session2 *pecs.Session   // Second player
-    Offer2 item.Stack
-}
-
-handle := pecs.Schedule2(buyer, seller, &TradeTask{...}, 3*time.Second)
-```
-
-### Transaction Context
-
-All systems receive a `*world.Tx` parameter. Your session's player is **guaranteed** to exist in this transaction - the scheduler validates this before calling your system. You only need to check `ok` when accessing players through relations or other sessions not defined in your system struct.
-```go
-// Your session's player - always valid, no need to check
-func (l *MyLoop) Run(tx *world.Tx) {
-    p, _ := l.Session.Player(tx) // Safe!
-    p.Message("Hello!")
-}
-
-// Other players via relations - check these
-func (l *PartyLoop) Run(tx *world.Tx) {
-    p, _ := l.Session.Player(tx) // Safe!
+    Session2 *pecs.Session  // Second player (seller)
+    Seller   *Inventory `pecs:"mut"`
     
-    for memberSess := range l.Party.Members.Iter() {
-        if member, ok := memberSess.Player(tx); ok { // Check this!
-            member.Message("Party message")
-        }
-    }
+    // Payload
+    Item  item.Stack
+    Price int
 }
+
+func (t *TradeTask) Run(tx *world.Tx) {
+    // Both sessions guaranteed to be valid
+    t.Seller.Items = append(t.Seller.Items, t.Item)
+    t.Seller.Gold += t.Price
+    t.Buyer.Gold -= t.Price
+}
+
+// Schedule multi-session task
+pecs.Schedule2(buyer, seller, &TradeTask{Item: sword, Price: 100}, time.Second)
 ```
 
-### Relations
+---
 
-Type-safe links between sessions with automatic cleanup on disconnect.
+## Dependency Injection
+
+### Tag Reference
+
+| Tag | Description | Example |
+|-----|-------------|---------|
+| (none) | Required read-only component | `Health *Health` |
+| `pecs:"mut"` | Required mutable component | `Health *Health \`pecs:"mut"\`` |
+| `pecs:"opt"` | Optional component (nil if missing) | `Shield *Shield \`pecs:"opt"\`` |
+| `pecs:"opt,mut"` | Optional mutable component | `Buff *Buff \`pecs:"opt,mut"\`` |
+| `pecs:"rel"` | Relation traversal | `Target *Health \`pecs:"rel"\`` |
+| `pecs:"res"` | Bundle resource | `Config *Config \`pecs:"res"\`` |
+| `pecs:"res,mut"` | Mutable bundle resource | `State *State \`pecs:"res,mut"\`` |
+| `pecs:"inj"` | Global injection | `DB *Database \`pecs:"inj"\`` |
+| `pecs:"peer"` | Peer data resolution | `Friend *Profile \`pecs:"peer"\`` |
+| `pecs:"shared"` | Shared entity resolution | `Party *PartyInfo \`pecs:"shared"\`` |
+
+**Special Fields (auto-injected):**
+
+| Field | Description |
+|-------|-------------|
+| `Session *pecs.Session` | Current session |
+| `Manager *pecs.Manager` | Manager instance |
+
+### Phantom Types
+
+Use phantom types to filter which sessions a system runs on:
 
 ```go
-type PartyMember struct {
-    JoinedAt time.Time
-    Leader   pecs.Relation[PartyLeader]    // Points to one session
-}
-
-type PartyLeader struct {
-    Name    string
-    Members pecs.RelationSet[PartyMember]  // Points to many sessions
+type CombatLoop struct {
+    Session *pecs.Session
+    Health  *Health `pecs:"mut"`
+    
+    _ pecs.With[InCombat]     // Only run if InCombat component exists
+    _ pecs.Without[Spectator] // Skip if Spectator component exists
+    _ pecs.Without[Dead]      // Skip if Dead component exists
 }
 ```
 
-**Usage:**
+### Resources
 
-```go
-// Set relation
-member := &PartyMember{JoinedAt: time.Now()}
-member.Leader.Set(leaderSess)
-pecs.Add(memberSess, member)
-
-// Add to relation set
-leader := pecs.Get[PartyLeader](leaderSess)
-leader.Members.Add(memberSess)
-
-// Resolve relation (get session and component)
-if leaderSess, leaderComp, ok := pecs.Resolve(member.Leader); ok {
-    leaderComp.Name // Access leader's data
-}
-
-// Iterate relation set
-for _, memberSess := range leader.Members.All() {
-    memberComp := pecs.Get[PartyMember](memberSess)
-    // ...
-}
-
-// Check and clear
-if member.Leader.Valid() { ... }
-member.Leader.Clear()
-leader.Members.Remove(memberSess)
-```
-
-### Events
-
-Dispatch custom events to handlers.
-
-```go
-// Define event
-type DamageEvent struct {
-    Amount int
-    Source world.DamageSource
-}
-
-// Handle in system
-func (h *MyHandler) OnDamageEvent(e DamageEvent) {
-    fmt.Printf("Took %d damage\n", e.Amount)
-}
-
-// Dispatch to single session
-sess.Dispatch(DamageEvent{Amount: 5, Source: src})
-
-// Broadcast to all sessions (via manager)
-mngr.Broadcast(DamageEvent{Amount: 10, Source: src})
-
-// Or use session convenience method
-sess.Broadcast(DamageEvent{Amount: 10, Source: src})
-
-// Broadcast to all except certain sessions
-mngr.BroadcastExcept(ChatEvent{Message: "Hello"}, sender)
-sess.BroadcastExcept(ChatEvent{Message: "Hello"}, sess) // Exclude self
-
-// Or from within a system that has Manager injected
-h.Manager.Broadcast(DamageEvent{Amount: 10, Source: src})
-```
-
-### Resources & Injections
-
-**Resources** are bundle-scoped shared data:
+Resources are bundle-scoped shared data accessible to all systems in that bundle:
 
 ```go
 type GameConfig struct {
     MaxPartySize  int
     RegenInterval time.Duration
+    SpawnPoint    mgl64.Vec3
 }
 
+// Register with bundle
 bundle.Resource(&GameConfig{
     MaxPartySize:  5,
     RegenInterval: time.Second,
+    SpawnPoint:    mgl64.Vec3{0, 64, 0},
 })
 
 // Access in systems
-type MyLoop struct {
-    Config *GameConfig `pecs:"res"`
+type SpawnHandler struct {
+    pecs.NopHandler
+    Session *pecs.Session
+    Config  *GameConfig `pecs:"res"`
+}
+
+func (h *SpawnHandler) HandleRespawn(p *player.Player, pos *mgl64.Vec3, w **world.World) {
+    *pos = h.Config.SpawnPoint
 }
 ```
 
-**Injections** are global singletons:
+### Injections
+
+Injections are global singletons available to all systems across all bundles:
 
 ```go
-type Database struct { /* ... */ }
-type Logger struct { /* ... */ }
+type Database struct {
+    conn *sql.DB
+}
 
-pecs.NewBuilder().
-    Injection(&Database{}).
-    Injection(&Logger{}).
-    Bundle(bundle).
+type Logger struct {
+    prefix string
+}
+
+// Register globally
+mngr := pecs.NewBuilder().
+    Injection(&Database{conn: db}).
+    Injection(&Logger{prefix: "[PECS]"}).
+    Bundle(gameBundle).
     Init()
 
-// Access in systems
-type MyHandler struct {
-    DB     *Database `pecs:"inj"`
-    Logger *Logger   `pecs:"inj"`
+// Access in any system
+type SaveHandler struct {
+    pecs.NopHandler
+    Session *pecs.Session
+    DB      *Database `pecs:"inj"`
+    Logger  *Logger   `pecs:"inj"`
+}
+
+func (h *SaveHandler) HandleQuit(p *player.Player) {
+    h.Logger.Log("Player", p.Name(), "disconnecting")
+    h.DB.SavePlayer(h.Session)
 }
 ```
 
-### Commands & Forms
+---
+
+## Relations
+
+Relations create type-safe links between sessions. PECS automatically cleans up relations when sessions disconnect.
+
+### Local Relations
+
+Use `Relation[T]` and `RelationSet[T]` for references between players on the same server:
+
+```go
+// Single reference
+type Following struct {
+    Target pecs.Relation[Position]
+}
+
+// Multiple references
+type PartyLeader struct {
+    Name    string
+    Members pecs.RelationSet[PartyMember]
+}
+
+type PartyMember struct {
+    JoinedAt time.Time
+    Leader   pecs.Relation[PartyLeader]
+}
+```
+
+**Using Relations:**
+
+```go
+// Set a relation
+member := &PartyMember{JoinedAt: time.Now()}
+member.Leader.Set(leaderSession)
+pecs.Add(memberSession, member)
+
+// Get target session
+if targetSess := member.Leader.Get(); targetSess != nil {
+    // Access target session
+}
+
+// Check validity
+if member.Leader.Valid() {
+    // Target exists and has the required component
+}
+
+// Clear relation
+member.Leader.Clear()
+```
+
+**Using RelationSets:**
+
+```go
+leader := pecs.Get[PartyLeader](leaderSession)
+
+// Add member
+leader.Members.Add(memberSession)
+
+// Remove member
+leader.Members.Remove(memberSession)
+
+// Check membership
+if leader.Members.Has(memberSession) {
+    // Is a member
+}
+
+// Get count
+count := leader.Members.Len()
+
+// Iterate all members
+for _, memberSess := range leader.Members.All() {
+    // Process each member
+}
+
+// Get only valid members (with required component)
+for _, memberSess := range leader.Members.AllValid() {
+    // Process valid members
+}
+
+// Clear all
+leader.Members.Clear()
+```
+
+### Relation Resolution
+
+Use the `pecs:"rel"` tag to automatically resolve relations in systems:
+
+```go
+type PartyHealLoop struct {
+    Session *pecs.Session
+    Member  *PartyMember
+    Leader  *PartyLeader `pecs:"rel"` // Resolved from Member.Leader
+}
+
+func (l *PartyHealLoop) Run(tx *world.Tx) {
+    if l.Leader != nil {
+        // Access leader's data
+        fmt.Println("Leader:", l.Leader.Name)
+    }
+}
+```
+
+For relation sets, inject a slice:
+
+```go
+type PartyBuffLoop struct {
+    Session  *pecs.Session
+    Leader   *PartyLeader
+    Members  []*PartyMember `pecs:"rel"` // Resolved from Leader.Members
+}
+
+func (l *PartyBuffLoop) Run(tx *world.Tx) {
+    for _, member := range l.Members {
+        // Apply buff to each member
+    }
+}
+```
+
+**Manual Resolution:**
+
+```go
+// Resolve relation to get session and component
+if sess, comp, ok := pecs.Resolve(member.Leader); ok {
+    fmt.Println("Leader name:", comp.Name)
+}
+```
+
+---
+
+## Federation
+
+Federation enables cross-server data access. When players can be on different servers (in a network), you need a way to access their data regardless of which server they're on.
+
+### Federation Overview
+
+PECS provides two reference types for cross-server data:
+
+| Type | Purpose | Target | Example |
+|------|---------|--------|---------|
+| `Peer[T]` | Reference another player's data | Player (by ID) | Friend, party member |
+| `Shared[T]` | Reference shared entity data | Entity (by ID) | Party, guild, match |
+
+Data is fetched via **Providers** - interfaces you implement to connect PECS to your backend services.
+
+### Peer References
+
+`Peer[T]` references another player's component data. Works whether the player is local or remote.
+
+```go
+// Component with peer reference
+type FriendsList struct {
+    BestFriend Peer[FriendProfile]   // Single friend
+    Friends    PeerSet[FriendProfile] // Multiple friends
+}
+
+type FriendProfile struct {
+    Username string
+    Online   bool
+    Server   string
+}
+```
+
+**Using Peer:**
+
+```go
+// Set peer by player ID (e.g., XUID)
+friends := &FriendsList{}
+friends.BestFriend.Set("player-123-xuid")
+pecs.Add(sess, friends)
+
+// Get ID
+id := friends.BestFriend.ID()
+
+// Check if set
+if friends.BestFriend.IsSet() {
+    // Has a best friend set
+}
+
+// Clear
+friends.BestFriend.Clear()
+```
+
+**Using PeerSet:**
+
+```go
+// Set all IDs
+friends.Friends.Set([]string{"player-1", "player-2", "player-3"})
+
+// Add single
+friends.Friends.Add("player-4")
+
+// Remove
+friends.Friends.Remove("player-2")
+
+// Get all IDs
+ids := friends.Friends.IDs()
+
+// Get count
+count := friends.Friends.Len()
+
+// Clear all
+friends.Friends.Clear()
+```
+
+**Resolving Peer Data in Systems:**
+
+```go
+type FriendsDisplayLoop struct {
+    Session     *pecs.Session
+    FriendsList *FriendsList
+    
+    // PECS resolves these automatically via providers
+    BestFriend  *FriendProfile   `pecs:"peer"` // From FriendsList.BestFriend
+    AllFriends  []*FriendProfile `pecs:"peer"` // From FriendsList.Friends
+}
+
+func (l *FriendsDisplayLoop) Run(tx *world.Tx) {
+    p, _ := l.Session.Player(tx)
+    
+    if l.BestFriend != nil {
+        status := "offline"
+        if l.BestFriend.Online {
+            status = "online on " + l.BestFriend.Server
+        }
+        p.Message("Best friend: " + l.BestFriend.Username + " (" + status + ")")
+    }
+    
+    for _, friend := range l.AllFriends {
+        // Display friend info
+    }
+}
+```
+
+### Shared References
+
+`Shared[T]` references shared entities (parties, guilds, matches) that aren't tied to a specific player.
+
+```go
+// Component with shared reference
+type MatchmakingData struct {
+    CurrentParty Shared[PartyInfo]
+    ActiveMatch  Shared[MatchInfo]
+}
+
+type PartyInfo struct {
+    ID       string
+    LeaderID string
+    Members  []PartyMemberInfo
+    Open     bool
+}
+
+type PartyMemberInfo struct {
+    ID       string
+    Username string
+}
+```
+
+**Using Shared:**
+
+```go
+mmData := &MatchmakingData{}
+mmData.CurrentParty.Set("party-456")
+pecs.Add(sess, mmData)
+
+// Same API as Peer
+id := mmData.CurrentParty.ID()
+mmData.CurrentParty.Clear()
+```
+
+**Using SharedSet:**
+
+```go
+type GuildData struct {
+    ActiveWars SharedSet[WarInfo]
+}
+
+// Same API as PeerSet
+guildData.ActiveWars.Set([]string{"war-1", "war-2"})
+guildData.ActiveWars.Add("war-3")
+```
+
+**Resolving Shared Data in Systems:**
+
+```go
+type PartyDisplayHandler struct {
+    pecs.NopHandler
+    Session *pecs.Session
+    MMData  *MatchmakingData
+    Party   *PartyInfo `pecs:"shared"` // Resolved from MMData.CurrentParty
+}
+
+func (h *PartyDisplayHandler) HandleJoin(p *player.Player) {
+    if h.Party != nil {
+        p.Message("You're in party: " + h.Party.ID)
+        p.Message("Leader: " + h.Party.LeaderID)
+        p.Message("Members: " + strconv.Itoa(len(h.Party.Members)))
+    }
+}
+```
+
+### Providers
+
+Providers fetch and sync data from your backend services. Implement `PlayerProvider` for peer data and `EntityProvider` for shared data.
+
+**PlayerProvider:**
+
+```go
+type PlayerProvider interface {
+    // Unique name for logging
+    Name() string
+    
+    // Component types this provider handles
+    PlayerComponents() []reflect.Type
+    
+    // Fetch single player's components
+    FetchPlayer(ctx context.Context, playerID string) ([]any, error)
+    
+    // Batch fetch multiple players
+    FetchPlayers(ctx context.Context, playerIDs []string) (map[string][]any, error)
+    
+    // Subscribe to real-time updates
+    SubscribePlayer(ctx context.Context, playerID string, updates chan<- PlayerUpdate) (Subscription, error)
+}
+```
+
+**Example PlayerProvider Implementation:**
+
+```go
+type StatusProvider struct {
+    statusClient statusv1.StatusServiceClient
+    nats         *nats.Conn
+}
+
+func (p *StatusProvider) Name() string {
+    return "status"
+}
+
+func (p *StatusProvider) PlayerComponents() []reflect.Type {
+    return []reflect.Type{reflect.TypeOf(FriendProfile{})}
+}
+
+func (p *StatusProvider) FetchPlayer(ctx context.Context, playerID string) ([]any, error) {
+    resp, err := p.statusClient.GetStatus(ctx, &statusv1.GetStatusRequest{PlayerId: playerID})
+    if err != nil {
+        return nil, err
+    }
+    
+    return []any{
+        &FriendProfile{
+            Username: resp.Username,
+            Online:   resp.Online,
+            Server:   resp.GetServerId(),
+        },
+    }, nil
+}
+
+func (p *StatusProvider) FetchPlayers(ctx context.Context, playerIDs []string) (map[string][]any, error) {
+    resp, err := p.statusClient.GetStatuses(ctx, &statusv1.GetStatusesRequest{PlayerIds: playerIDs})
+    if err != nil {
+        return nil, err
+    }
+    
+    result := make(map[string][]any)
+    for id, status := range resp.Statuses {
+        result[id] = []any{
+            &FriendProfile{
+                Username: status.Username,
+                Online:   status.Online,
+                Server:   status.GetServerId(),
+            },
+        }
+    }
+    return result, nil
+}
+
+func (p *StatusProvider) SubscribePlayer(ctx context.Context, playerID string, updates chan<- pecs.PlayerUpdate) (pecs.Subscription, error) {
+    sub, err := p.nats.Subscribe("status.player."+playerID, func(msg *nats.Msg) {
+        // Parse event and send update
+        var event statusv1.StatusChanged
+        proto.Unmarshal(msg.Data, &event)
+        
+        updates <- pecs.PlayerUpdate{
+            ComponentType: reflect.TypeOf(FriendProfile{}),
+            Data: &FriendProfile{
+                Username: event.Username,
+                Online:   event.Online,
+                Server:   event.ServerId,
+            },
+        }
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    return &natsSubscription{sub}, nil
+}
+```
+
+**EntityProvider:**
+
+```go
+type EntityProvider interface {
+    Name() string
+    EntityComponents() []reflect.Type
+    FetchEntity(ctx context.Context, entityID string) (any, error)
+    SubscribeEntity(ctx context.Context, entityID string, updates chan<- any) (Subscription, error)
+}
+```
+
+**Registering Providers:**
+
+```go
+mngr := pecs.NewBuilder().
+    Bundle(gameBundle).
+    PlayerProvider(&StatusProvider{...}).
+    PlayerProvider(&ProfileProvider{...}).
+    EntityProvider(&PartyProvider{...}).
+    EntityProvider(&MatchProvider{...}).
+    Init()
+
+// Or with options
+mngr := pecs.NewBuilder().
+    PlayerProvider(&StatusProvider{...}, 
+        pecs.WithFetchTimeout(2000),      // 2 second timeout
+        pecs.WithGracePeriod(60000),      // 60 second cache grace period
+        pecs.WithStaleTimeout(300000),    // 5 minute stale timeout
+    ).
+    Init()
+```
+
+### When to Use Each Type
+
+| Type | Use When | Example |
+|------|----------|---------|
+| `Relation[T]` | Target **must** be on same server | Combat target, follow target |
+| `Peer[T]` | Target is a **player** (local or remote) | Friend, party member, enemy |
+| `Shared[T]` | Target is a **shared entity** (not a player) | Party, guild, match, server |
+
+**Decision Flow:**
+
+```
+Is the target a player?
+├── YES: Could they be on a different server?
+│   ├── YES → Peer[T]
+│   └── NO (guaranteed same server) → Relation[T]
+└── NO (party, guild, match, etc.) → Shared[T]
+```
+
+---
+
+## Events
+
+Dispatch custom events to handler systems.
+
+**Define Events:**
+
+```go
+type DamageEvent struct {
+    Amount int
+    Source world.DamageSource
+}
+
+type LevelUpEvent struct {
+    NewLevel int
+    OldLevel int
+}
+```
+
+**Handle Events:**
+
+```go
+type NotificationHandler struct {
+    pecs.NopHandler
+    Session *pecs.Session
+}
+
+// Method name doesn't matter, only the signature
+func (h *NotificationHandler) OnDamage(e DamageEvent) {
+    if p, ok := h.Session.Player(nil); ok {
+        p.Message(fmt.Sprintf("Took %d damage!", e.Amount))
+    }
+}
+
+func (h *NotificationHandler) HandleLevelUp(e LevelUpEvent) {
+    if p, ok := h.Session.Player(nil); ok {
+        p.Message(fmt.Sprintf("Level up! %d -> %d", e.OldLevel, e.NewLevel))
+    }
+}
+```
+
+**Dispatch Events:**
+
+```go
+// To single session
+sess.Dispatch(DamageEvent{Amount: 5, Source: src})
+
+// To all sessions
+mngr.Broadcast(LevelUpEvent{NewLevel: 10, OldLevel: 9})
+
+// To all except some
+mngr.BroadcastExcept(ChatEvent{Message: "Hello"}, sender)
+sess.BroadcastExcept(event, sess) // Exclude self
+```
+
+**Built-in Events:**
+
+```go
+// Dispatched when a component is added
+type ComponentAttachEvent struct {
+    ComponentType reflect.Type
+}
+
+// Dispatched when a component is removed
+type ComponentDetachEvent struct {
+    ComponentType reflect.Type
+}
+```
+
+---
+
+## Commands & Forms
 
 Helper functions for Dragonfly commands and forms:
 
@@ -446,55 +1026,73 @@ func (c HealCommand) Run(src cmd.Source, out *cmd.Output, tx *world.Tx) {
         return
     }
     
-    health.Current += c.Amount
+    health.Current = min(health.Current+c.Amount, health.Max)
     out.Printf("Healed %d HP!", c.Amount)
 }
 
-// Forms
-func (f MyForm) Submit(sub form.Submitter, tx *world.Tx) {
+// Register command with bundle
+bundle.Command(cmd.New("heal", "Heal yourself", nil, HealCommand{}))
+```
+
+**Forms:**
+
+```go
+type SettingsForm struct {
+    EnableNotifications bool
+    Volume              int
+}
+
+func (f SettingsForm) Submit(sub form.Submitter, tx *world.Tx) {
     p, sess := pecs.Form(sub)
     if sess == nil {
         return
     }
-    // Handle form submission...
+    
+    settings := pecs.GetOrAdd(sess, &Settings{})
+    settings.Notifications = f.EnableNotifications
+    settings.Volume = f.Volume
 }
 ```
 
-**Getting other players in transactions:**
+**Must Variants (panic if not player):**
 
 ```go
-// WRONG - causes deadlock if same world!
-otherSess.Exec(func(tx *world.Tx, p *player.Player) {
-    p.Message("Hello")
-})
-
-// CORRECT - use existing transaction
-if otherPlayer, ok := otherSess.Player(tx); ok {
-    otherPlayer.Message("Hello")
-}
+p, sess := pecs.MustCommand(src) // Panics if not player
+p, sess := pecs.MustForm(sub)    // Panics if not player
 ```
+
+---
 
 ## Bundle Organization
 
-Structure your code with multiple bundles:
+Structure your game with multiple bundles:
 
 ```go
 func main() {
     core := pecs.NewBundle("core").
         Resource(&ServerConfig{}).
         Handler(&JoinHandler{}).
-        Loop(&AutoSave{}, time.Minute, pecs.After)
+        Handler(&QuitHandler{}).
+        Loop(&AutoSaveLoop{}, time.Minute, pecs.After)
 
     combat := pecs.NewBundle("combat").
         Resource(&CombatConfig{}).
-        Command(cmd.New("stats", "shows stats", nil, &StatsCommand{})).
         Handler(&DamageHandler{}).
-        Loop(&CombatTagLoop{}, time.Second, pecs.Default)
+        Handler(&DeathHandler{}).
+        Loop(&CombatTagLoop{}, time.Second, pecs.Default).
+        Task(&RespawnTask{}, pecs.Default)
 
     party := pecs.NewBundle("party").
         Resource(&PartyConfig{}).
+        Handler(&PartyInviteHandler{}).
         Handler(&PartyChatHandler{}).
-        Task(&PartyDisbandTask{}, pecs.Default)
+        Command(cmd.New("party", "Party commands", nil, PartyCommand{}))
+
+    economy := pecs.NewBundle("economy").
+        Resource(&EconomyConfig{}).
+        Handler(&ShopHandler{}).
+        Command(cmd.New("balance", "Check balance", nil, BalanceCommand{})).
+        Command(cmd.New("pay", "Pay another player", nil, PayCommand{}))
 
     mngr := pecs.NewBuilder().
         Injection(&Database{}).
@@ -502,33 +1100,75 @@ func main() {
         Bundle(core).
         Bundle(combat).
         Bundle(party).
+        Bundle(economy).
+        PlayerProvider(&StatusProvider{}).
+        EntityProvider(&PartyProvider{}).
         Init()
-    
-    // Use manager to create sessions...
 }
 ```
 
-## Execution Stages
-
-Control execution order with stages:
+**Bundle-Level Injections:**
 
 ```go
-bundle.Loop(&InputSystem{}, 0, pecs.Before)   // Runs first
-bundle.Loop(&GameLogic{}, 0, pecs.Default)    // Runs second  
-bundle.Loop(&RenderSystem{}, 0, pecs.After)   // Runs last
+// Available only to systems in this bundle
+bundle := pecs.NewBundle("combat").
+    Injection(&CombatLogger{})
 ```
 
-## Scheduler & Parallelism
+---
+
+## Execution Model
+
+### Stages
+
+Control execution order with three stages:
+
+```go
+const (
+    pecs.Before  // Runs first - input handling, pre-processing
+    pecs.Default // Runs second - main game logic
+    pecs.After   // Runs last - cleanup, synchronization, rendering
+)
+
+bundle.Loop(&InputHandler{}, 0, pecs.Before)
+bundle.Loop(&GameLogic{}, 0, pecs.Default)
+bundle.Loop(&NetworkSync{}, 0, pecs.After)
+```
+
+### Parallelism
 
 PECS automatically parallelizes non-conflicting systems:
 
-- Systems in **different stages** run sequentially
-- Systems in the **same stage** with non-overlapping component access run in parallel
-- Systems that write to the same component type are serialized
+- Systems in **different stages** run sequentially (Before → Default → After)
+- Systems in the **same stage** that access **different components** run in parallel
+- Systems that **write** to the same component type are serialized
 
-The scheduler respects Dragonfly's world transaction model, ensuring all systems execute within proper transaction contexts.
+The scheduler analyzes component access patterns via tags:
+- Read access (`Health *Health`) doesn't conflict with other reads
+- Write access (`Health *Health \`pecs:"mut"\``) conflicts with any other access to that component
 
-## Concurrency Rules
+### Transaction Context
+
+All systems receive a `*world.Tx` parameter. Your session's player is guaranteed to be valid in this transaction.
+
+```go
+func (l *MyLoop) Run(tx *world.Tx) {
+    // Your session's player - always valid
+    p, _ := l.Session.Player(tx)
+    p.Message("Hello!")
+    
+    // Other players via relations - check these
+    for _, memberSess := range l.Members {
+        if member, ok := memberSess.Player(tx); ok {
+            member.Message("Party message")
+        }
+    }
+}
+```
+
+---
+
+## Concurrency
 
 | Context | Safe Operations |
 |---------|-----------------|
@@ -537,13 +1177,31 @@ The scheduler respects Dragonfly's world transaction model, ensuring all systems
 | Tasks | Read/write components directly |
 | Commands | Read/write components directly |
 | Forms | Read/write components directly |
-| External goroutines | Must use `sess.Exec()` |
+| External goroutines | **Must use `sess.Exec()`** |
 
-**Critical:** Never call `sess.Exec()` from within a handler, loop, task, command, or form when targeting a session in the same world. This causes deadlock. Use the existing transaction instead.
+**Critical Rule:** Never call `sess.Exec()` from within a handler, loop, task, command, or form when targeting a session in the same world. This causes deadlock. Use the existing transaction instead.
+
+```go
+// WRONG - potential deadlock
+func (h *MyHandler) HandleChat(ctx *player.Context, msg *string) {
+    otherSess.Exec(func(tx *world.Tx, p *player.Player) { // DEADLOCK!
+        p.Message(*msg)
+    })
+}
+
+// CORRECT - use existing transaction context
+func (h *MyHandler) HandleChat(ctx *player.Context, msg *string) {
+    if other, ok := otherSess.Player(ctx.Tx()); ok {
+        other.Message(*msg)
+    }
+}
+```
+
+---
 
 ## API Reference
 
-### Manager Methods
+### Manager
 
 ```go
 // Session management
@@ -561,11 +1219,37 @@ mngr.SessionCount() int
 mngr.Broadcast(event any)
 mngr.BroadcastExcept(event any, exclude ...*Session)
 
-// Timing
+// Federation
+mngr.RegisterPlayerProvider(p PlayerProvider, opts ...ProviderOption)
+mngr.RegisterEntityProvider(p EntityProvider, opts ...ProviderOption)
+
+// Lifecycle
+mngr.Shutdown()
 mngr.TickNumber() uint64
 ```
 
-### Component Functions
+### Session
+
+```go
+sess.Handle() *world.EntityHandle
+sess.UUID() uuid.UUID
+sess.Name() string
+sess.XUID() string
+sess.ID() string // Same as XUID, for federation
+sess.Player(tx *world.Tx) (*player.Player, bool)
+sess.Exec(fn func(tx *world.Tx, p *player.Player)) bool
+sess.World() *world.World
+sess.Manager() *Manager
+sess.Closed() bool
+sess.Mask() Bitmask
+
+// Events
+sess.Dispatch(event any)
+sess.Broadcast(event any)
+sess.BroadcastExcept(event any, exclude ...*Session)
+```
+
+### Components
 
 ```go
 pecs.Add[T any](s *Session, component *T)
@@ -575,7 +1259,7 @@ pecs.GetOrAdd[T any](s *Session, defaultVal *T) *T
 pecs.Has[T any](s *Session) bool
 ```
 
-### Task Functions
+### Tasks
 
 ```go
 pecs.Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle
@@ -584,33 +1268,118 @@ pecs.ScheduleAt(s *Session, task Runnable, at time.Time) *TaskHandle
 pecs.ScheduleRepeating(s *Session, task Runnable, interval time.Duration, times int) *RepeatingTaskHandle
 pecs.Dispatch(s *Session, task Runnable) *TaskHandle
 pecs.Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle
+
+handle.Cancel()
+repeatHandle.Cancel()
 ```
 
-### Event Functions
+### Relations
 
 ```go
-sess.Dispatch(event any)
-sess.Broadcast(event any)
-sess.BroadcastExcept(event any, exclude ...*Session)
-mngr.Broadcast(event any)
-mngr.BroadcastExcept(event any, exclude ...*Session)
+// Relation[T]
+relation.Set(target *Session)
+relation.Get() *Session
+relation.Clear()
+relation.Valid() bool
+relation.Target() *Session
+
+// RelationSet[T]
+set.Add(target *Session)
+set.Remove(target *Session)
+set.Has(target *Session) bool
+set.Clear()
+set.Len() int
+set.All() []*Session
+set.AllValid() []*Session
+set.Iter() <-chan *Session
+
+// Resolution
+pecs.Resolve[T any](r Relation[T]) (sess *Session, comp *T, ok bool)
 ```
 
-### Relation Functions
+### Peer & Shared
 
 ```go
-pecs.Resolve[T any](r Relation[T]) (*Session, *T, bool)
+// Peer[T]
+peer.Set(playerID string)
+peer.ID() string
+peer.IsSet() bool
+peer.Clear()
+
+// PeerSet[T]
+peerSet.Set(playerIDs []string)
+peerSet.Add(playerID string)
+peerSet.Remove(playerID string)
+peerSet.IDs() []string
+peerSet.Len() int
+peerSet.Clear()
+
+// Shared[T]
+shared.Set(entityID string)
+shared.ID() string
+shared.IsSet() bool
+shared.Clear()
+
+// SharedSet[T]
+sharedSet.Set(entityIDs []string)
+sharedSet.Add(entityID string)
+sharedSet.Remove(entityID string)
+sharedSet.IDs() []string
+sharedSet.Len() int
+sharedSet.Clear()
 ```
 
-### Helper Functions
+### Helpers
 
 ```go
 pecs.Command(src cmd.Source) (*player.Player, *Session)
 pecs.Form(sub form.Submitter) (*player.Player, *Session)
 pecs.MustCommand(src cmd.Source) (*player.Player, *Session)
 pecs.MustForm(sub form.Submitter) (*player.Player, *Session)
+pecs.NewHandler(sess *Session, p *player.Player) Handler
 ```
 
+### Builder
+
+```go
+pecs.NewBuilder() *Builder
+
+builder.Bundle(bundle *Bundle) *Builder
+builder.Injection(inj any) *Builder
+builder.Resource(res any) *Builder
+builder.Handler(h Handler) *Builder
+builder.Loop(sys Runnable, interval time.Duration, stage Stage) *Builder
+builder.Task(sys Runnable, stage Stage) *Builder
+builder.Command(command cmd.Command) *Builder
+builder.PlayerProvider(p PlayerProvider, opts ...ProviderOption) *Builder
+builder.EntityProvider(p EntityProvider, opts ...ProviderOption) *Builder
+builder.Init() *Manager
+```
+
+### Bundle
+
+```go
+pecs.NewBundle(name string) *Bundle
+
+bundle.Name() string
+bundle.Injection(inj any) *Bundle
+bundle.Resource(res any) *Bundle
+bundle.Handler(h Handler) *Bundle
+bundle.Loop(sys Runnable, interval time.Duration, stage Stage) *Bundle
+bundle.Task(sys Runnable, stage Stage) *Bundle
+bundle.Command(command cmd.Command) *Bundle
+```
+
+### Provider Options
+
+```go
+pecs.WithFetchTimeout(ms int64) ProviderOption   // Default: 5000ms
+pecs.WithGracePeriod(ms int64) ProviderOption    // Default: 30000ms
+pecs.WithStaleTimeout(ms int64) ProviderOption   // Default: 300000ms
+```
+
+---
+
 ## Acknowledgements
-This work is inspired by
-[andreashgk/peex](https://github.com/andreashgk/peex)
+
+This work is inspired by [andreashgk/peex](https://github.com/andreashgk/peex).

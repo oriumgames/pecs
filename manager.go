@@ -53,6 +53,13 @@ type Manager struct {
 
 	// scheduler manages loop and task execution
 	scheduler *Scheduler
+
+	// Federation support
+	// peerCache manages cached data for remote players (Peer[T] resolution)
+	peerCache *peerCache
+
+	// sharedCache manages cached data for shared entities (Shared[T] resolution)
+	sharedCache *sharedCache
 }
 
 // newManager creates a new manager.
@@ -68,6 +75,8 @@ func newManager() *Manager {
 		taskQueue:       newTaskQueue(),
 	}
 	m.scheduler = newScheduler(m)
+	m.peerCache = newPeerCache(m)
+	m.sharedCache = newSharedCache(m)
 	return m
 }
 
@@ -388,6 +397,14 @@ func (m *Manager) Start() {
 func (m *Manager) Shutdown() {
 	m.scheduler.Stop()
 
+	// Stop federation caches
+	if m.peerCache != nil {
+		m.peerCache.stop()
+	}
+	if m.sharedCache != nil {
+		m.sharedCache.stop()
+	}
+
 	// Close all sessions
 	m.sessionsMu.Lock()
 	sessions := make([]*Session, 0, len(m.sessions))
@@ -399,6 +416,108 @@ func (m *Manager) Shutdown() {
 	for _, s := range sessions {
 		s.close()
 	}
+}
+
+// RegisterPlayerProvider registers a provider for Peer[T] resolution.
+func (m *Manager) RegisterPlayerProvider(p PlayerProvider, opts ...ProviderOption) {
+	options := defaultProviderOptions()
+	for _, opt := range opts {
+		opt(&options)
+	}
+	m.peerCache.registerProvider(p, options)
+}
+
+// RegisterEntityProvider registers a provider for Shared[T] resolution.
+func (m *Manager) RegisterEntityProvider(p EntityProvider, opts ...ProviderOption) {
+	options := defaultProviderOptions()
+	for _, opt := range opts {
+		opt(&options)
+	}
+	m.sharedCache.registerProvider(p, options)
+}
+
+// ResolvePeer resolves a Peer[T] reference to the target's component.
+// If the player is local, returns their component directly.
+// If remote, fetches and caches via the registered PlayerProvider.
+func (m *Manager) ResolvePeer(playerID string, componentType reflect.Type) unsafe.Pointer {
+	if playerID == "" {
+		return nil
+	}
+
+	// Fast path: check if player is local
+	if session := m.GetSessionByXUID(playerID); session != nil && !session.closed.Load() {
+		// Get component ID for this type
+		compID, ok := m.registry.getID(componentType)
+		if !ok {
+			return nil
+		}
+
+		session.mu.RLock()
+		ptr := session.getComponentUnsafe(compID)
+		session.mu.RUnlock()
+		return ptr
+	}
+
+	// Slow path: resolve via peer cache
+	return m.peerCache.resolve(playerID, componentType)
+}
+
+// ResolvePeers resolves multiple Peer[T] references.
+// Uses batch fetching for efficiency when multiple players are remote.
+func (m *Manager) ResolvePeers(playerIDs []string, componentType reflect.Type) []unsafe.Pointer {
+	if len(playerIDs) == 0 {
+		return nil
+	}
+
+	results := make([]unsafe.Pointer, len(playerIDs))
+	var remoteIDs []string
+	var remoteIndices []int
+
+	// First pass: resolve local sessions
+	compID, hasCompID := m.registry.getID(componentType)
+
+	for i, id := range playerIDs {
+		if id == "" {
+			continue
+		}
+
+		if session := m.GetSessionByXUID(id); session != nil && !session.closed.Load() {
+			if hasCompID {
+				session.mu.RLock()
+				results[i] = session.getComponentUnsafe(compID)
+				session.mu.RUnlock()
+			}
+		} else {
+			remoteIDs = append(remoteIDs, id)
+			remoteIndices = append(remoteIndices, i)
+		}
+	}
+
+	// Batch resolve remote players
+	if len(remoteIDs) > 0 {
+		remoteResults := m.peerCache.resolveMany(remoteIDs, componentType)
+		for i, ptr := range remoteResults {
+			results[remoteIndices[i]] = ptr
+		}
+	}
+
+	return results
+}
+
+// ResolveShared resolves a Shared[T] reference to the entity's data.
+func (m *Manager) ResolveShared(entityID string, dataType reflect.Type) unsafe.Pointer {
+	if entityID == "" {
+		return nil
+	}
+	return m.sharedCache.resolve(entityID, dataType)
+}
+
+// ResolveSharedMany resolves multiple Shared[T] references.
+func (m *Manager) ResolveSharedMany(entityIDs []string, dataType reflect.Type) []unsafe.Pointer {
+	if len(entityIDs) == 0 {
+		return nil
+	}
+	return m.sharedCache.resolveMany(entityIDs, dataType)
 }
 
 // TickNumber returns the current scheduler tick number.

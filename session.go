@@ -74,6 +74,12 @@ func (s *Session) XUID() string {
 	return s.xuid
 }
 
+// ID returns the player's persistent identifier (XUID).
+// This is used for Peer[T] resolution to identify players across servers.
+func (s *Session) ID() string {
+	return s.xuid
+}
+
 // Player retrieves the *player.Player instance associated with this session within the given transaction.
 // It returns (nil, false) if the player entity is not present in the transaction (e.g. offline or in another world).
 //

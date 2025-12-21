@@ -9,8 +9,20 @@ import (
 // Builder configures PECS before initialization.
 // Use NewBuilder() to create a builder and chain configuration methods.
 type Builder struct {
-	bundles    []*Bundle
-	injections []any
+	bundles         []*Bundle
+	injections      []any
+	playerProviders []playerProviderRegistration
+	entityProviders []entityProviderRegistration
+}
+
+type playerProviderRegistration struct {
+	provider PlayerProvider
+	options  []ProviderOption
+}
+
+type entityProviderRegistration struct {
+	provider EntityProvider
+	options  []ProviderOption
 }
 
 // NewBuilder creates a new PECS builder.
@@ -65,6 +77,28 @@ func (b *Builder) Task(sys Runnable, stage Stage) *Builder {
 	return b
 }
 
+// PlayerProvider registers a provider for Peer[T] resolution.
+// PlayerProviders fetch and sync data for remote players.
+//
+// Example:
+//
+//	builder.PlayerProvider(&StatusProvider{...}, pecs.WithFetchTimeout(2000))
+func (b *Builder) PlayerProvider(p PlayerProvider, opts ...ProviderOption) *Builder {
+	b.playerProviders = append(b.playerProviders, playerProviderRegistration{p, opts})
+	return b
+}
+
+// EntityProvider registers a provider for Shared[T] resolution.
+// EntityProviders fetch and sync data for shared entities (parties, matches, etc.).
+//
+// Example:
+//
+//	builder.EntityProvider(&PartyProvider{...})
+func (b *Builder) EntityProvider(p EntityProvider, opts ...ProviderOption) *Builder {
+	b.entityProviders = append(b.entityProviders, entityProviderRegistration{p, opts})
+	return b
+}
+
 // getOrCreateDefaultBundle returns the default bundle, creating it if needed.
 func (b *Builder) getOrCreateDefaultBundle() *Bundle {
 	for _, bundle := range b.bundles {
@@ -89,6 +123,14 @@ func (b *Builder) Init() *Manager {
 	// Add global injections
 	for _, inj := range b.injections {
 		m.addInjection(inj)
+	}
+
+	// Register federation providers
+	for _, reg := range b.playerProviders {
+		m.RegisterPlayerProvider(reg.provider, reg.options...)
+	}
+	for _, reg := range b.entityProviders {
+		m.RegisterEntityProvider(reg.provider, reg.options...)
 	}
 
 	// Build all systems

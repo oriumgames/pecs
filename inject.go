@@ -143,6 +143,114 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 			// Payload fields must be zeroed to prevent leakage between sessions
 			// when reusing the same system instance (e.g. in scheduler loops)
 			zeroPayloadField(systemPtr, field)
+
+		case KindPeer:
+			// Resolve Peer[T] - single remote player's component
+			if lastComponentPtr == nil {
+				if !field.Optional {
+					return false
+				}
+				setFieldPtr(systemPtr, field.Offset, nil)
+				continue
+			}
+
+			// Get player ID from Peer[T] in source component
+			peerPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.PeerSourceOffset)
+			playerID := getPeerID(peerPtr)
+
+			if playerID == "" {
+				if !field.Optional {
+					return false
+				}
+				setFieldPtr(systemPtr, field.Offset, nil)
+				continue
+			}
+
+			// Resolve via manager (handles local-first optimization)
+			compPtr := manager.ResolvePeer(playerID, field.ComponentType)
+			if compPtr == nil && !field.Optional {
+				return false
+			}
+			setFieldPtr(systemPtr, field.Offset, compPtr)
+
+		case KindPeerSlice:
+			// Resolve PeerSet[T] - multiple remote players' components
+			if lastComponentPtr == nil {
+				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				continue
+			}
+
+			// Get player IDs from PeerSet[T] in source component
+			peerSetPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.PeerSourceOffset)
+			playerIDs := getPeerSetIDs(peerSetPtr)
+
+			if len(playerIDs) == 0 {
+				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				continue
+			}
+
+			// Batch resolve via manager
+			compPtrs := manager.ResolvePeers(playerIDs, field.ComponentType)
+
+			// Build slice from results
+			slicePtr := unsafe.Pointer(systemPtr + field.Offset)
+			existingSlice := reflect.NewAt(reflect.SliceOf(reflect.PointerTo(field.ComponentType)), slicePtr).Elem()
+			slice := makePtrSliceFromUnsafe(compPtrs, field.ComponentType, existingSlice)
+			setSliceField(systemPtr, field.Offset, slice)
+
+		case KindShared:
+			// Resolve Shared[T] - single shared entity's data
+			if lastComponentPtr == nil {
+				if !field.Optional {
+					return false
+				}
+				setFieldPtr(systemPtr, field.Offset, nil)
+				continue
+			}
+
+			// Get entity ID from Shared[T] in source component
+			sharedPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.SharedSourceOffset)
+			entityID := getSharedID(sharedPtr)
+
+			if entityID == "" {
+				if !field.Optional {
+					return false
+				}
+				setFieldPtr(systemPtr, field.Offset, nil)
+				continue
+			}
+
+			// Resolve via manager
+			dataPtr := manager.ResolveShared(entityID, field.ComponentType)
+			if dataPtr == nil && !field.Optional {
+				return false
+			}
+			setFieldPtr(systemPtr, field.Offset, dataPtr)
+
+		case KindSharedSlice:
+			// Resolve SharedSet[T] - multiple shared entities' data
+			if lastComponentPtr == nil {
+				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				continue
+			}
+
+			// Get entity IDs from SharedSet[T] in source component
+			sharedSetPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.SharedSourceOffset)
+			entityIDs := getSharedSetIDs(sharedSetPtr)
+
+			if len(entityIDs) == 0 {
+				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				continue
+			}
+
+			// Batch resolve via manager
+			dataPtrs := manager.ResolveSharedMany(entityIDs, field.ComponentType)
+
+			// Build slice from results
+			slicePtr := unsafe.Pointer(systemPtr + field.Offset)
+			existingSlice := reflect.NewAt(reflect.SliceOf(reflect.PointerTo(field.ComponentType)), slicePtr).Elem()
+			slice := makePtrSliceFromUnsafe(dataPtrs, field.ComponentType, existingSlice)
+			setSliceField(systemPtr, field.Offset, slice)
 		}
 	}
 
@@ -157,10 +265,10 @@ func zeroSystem(system any, meta *SystemMeta) {
 		field := &meta.Fields[i]
 
 		switch field.Kind {
-		case KindSession, KindManager, KindComponent, KindRelation, KindResource, KindInjection:
+		case KindSession, KindManager, KindComponent, KindRelation, KindResource, KindInjection, KindPeer, KindShared:
 			setFieldPtr(systemPtr, field.Offset, nil)
 
-		case KindRelationSlice:
+		case KindRelationSlice, KindPeerSlice, KindSharedSlice:
 			// Zero the slice header
 			setEmptySlice(systemPtr, field.Offset, field.ComponentType)
 
@@ -245,6 +353,35 @@ func makeComponentSlice(sessions []*Session, compID ComponentID, compType reflec
 
 		if ptr != nil {
 			compValue := reflect.NewAt(compType, ptr)
+			slice = reflect.Append(slice, compValue)
+		}
+	}
+
+	return slice
+}
+
+// makePtrSliceFromUnsafe creates a slice of pointers from unsafe.Pointer slice.
+// Filters out nil entries.
+func makePtrSliceFromUnsafe(ptrs []unsafe.Pointer, elemType reflect.Type, reuse reflect.Value) reflect.Value {
+	slice := reuse
+	slice.SetLen(0)
+
+	// Count non-nil entries for capacity
+	nonNilCount := 0
+	for _, ptr := range ptrs {
+		if ptr != nil {
+			nonNilCount++
+		}
+	}
+
+	if slice.Cap() < nonNilCount {
+		sliceType := reflect.SliceOf(reflect.PointerTo(elemType))
+		slice = reflect.MakeSlice(sliceType, 0, nonNilCount)
+	}
+
+	for _, ptr := range ptrs {
+		if ptr != nil {
+			compValue := reflect.NewAt(elemType, ptr)
 			slice = reflect.Append(slice, compValue)
 		}
 	}

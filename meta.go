@@ -83,6 +83,18 @@ type FieldMeta struct {
 
 	// IsSlice indicates this is a slice field (for RelationSet resolution)
 	IsSlice bool
+
+	// PeerSourceIndex is the index of the source component field for Peer/PeerSet resolution
+	PeerSourceIndex int
+
+	// PeerSourceOffset is the offset of the Peer[T]/PeerSet[T] field in the source component
+	PeerSourceOffset uintptr
+
+	// SharedSourceIndex is the index of the source component field for Shared/SharedSet resolution
+	SharedSourceIndex int
+
+	// SharedSourceOffset is the offset of the Shared[T]/SharedSet[T] field in the source component
+	SharedSourceOffset uintptr
 }
 
 // WindowMeta defines a session window in a multi-session system.
@@ -338,6 +350,114 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 			} else {
 				meta.Access.ResReads = append(meta.Access.ResReads, fieldMeta.ComponentType)
 			}
+			meta.Fields = append(meta.Fields, fieldMeta)
+			continue
+		}
+
+		// Check for Peer[T] resolution (pecs:"peer")
+		if tag.Peer {
+			compType := field.Type
+			if compType.Kind() == reflect.Slice {
+				fieldMeta.IsSlice = true
+				compType = compType.Elem()
+			}
+			if compType.Kind() == reflect.Ptr {
+				compType = compType.Elem()
+			}
+
+			fieldMeta.ComponentType = compType
+
+			if fieldMeta.IsSlice {
+				fieldMeta.Kind = KindPeerSlice
+			} else {
+				fieldMeta.Kind = KindPeer
+			}
+
+			// Link to previous component field for Peer resolution
+			if lastComponentField != nil {
+				fieldMeta.PeerSourceIndex = lastComponentFieldIndex
+
+				// Find the Peer[T] or PeerSet[T] field in the source component
+				sourceType := lastComponentField.ComponentType
+				targetType := compType
+
+				for j := 0; j < sourceType.NumField(); j++ {
+					f := sourceType.Field(j)
+
+					// Check for Peer[T]
+					if !fieldMeta.IsSlice && isPeerType(f.Type) {
+						peerTarget := getPeerTargetType(f.Type)
+						if peerTarget == targetType {
+							fieldMeta.PeerSourceOffset = f.Offset
+							break
+						}
+					}
+
+					// Check for PeerSet[T]
+					if fieldMeta.IsSlice && isPeerSetType(f.Type) {
+						peerSetTarget := getPeerSetTargetType(f.Type)
+						if peerSetTarget == targetType {
+							fieldMeta.PeerSourceOffset = f.Offset
+							break
+						}
+					}
+				}
+			}
+
+			meta.Fields = append(meta.Fields, fieldMeta)
+			continue
+		}
+
+		// Check for Shared[T] resolution (pecs:"shared")
+		if tag.Shared {
+			compType := field.Type
+			if compType.Kind() == reflect.Slice {
+				fieldMeta.IsSlice = true
+				compType = compType.Elem()
+			}
+			if compType.Kind() == reflect.Ptr {
+				compType = compType.Elem()
+			}
+
+			fieldMeta.ComponentType = compType
+
+			if fieldMeta.IsSlice {
+				fieldMeta.Kind = KindSharedSlice
+			} else {
+				fieldMeta.Kind = KindShared
+			}
+
+			// Link to previous component field for Shared resolution
+			if lastComponentField != nil {
+				fieldMeta.SharedSourceIndex = lastComponentFieldIndex
+
+				// Find the Shared[T] or SharedSet[T] field in the source component
+				sourceType := lastComponentField.ComponentType
+				targetType := compType
+
+				for j := 0; j < sourceType.NumField(); j++ {
+					f := sourceType.Field(j)
+
+					// Check for Shared[T]
+					if !fieldMeta.IsSlice && isSharedType(f.Type) {
+						sharedTarget := getSharedTargetType(f.Type)
+						if sharedTarget == targetType {
+							fieldMeta.SharedSourceOffset = f.Offset
+							break
+						}
+					}
+
+					// Check for SharedSet[T]
+					if fieldMeta.IsSlice && isSharedSetType(f.Type) {
+						sharedSetTarget := getSharedSetTargetType(f.Type)
+						if sharedSetTarget == targetType {
+							fieldMeta.SharedSourceOffset = f.Offset
+							break
+						}
+					}
+				}
+			}
+
 			meta.Fields = append(meta.Fields, fieldMeta)
 			continue
 		}

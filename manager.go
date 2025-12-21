@@ -2,7 +2,6 @@ package pecs
 
 import (
 	"context"
-	"log/slog"
 	"reflect"
 	"sync"
 	"time"
@@ -550,45 +549,31 @@ func (m *Manager) NewSession(p *player.Player) *Session {
 func (m *Manager) initSessionFromProviders(s *Session) {
 	playerID := s.xuid
 	if playerID == "" {
-		slog.Warn("pecs: initSessionFromProviders skipped - empty XUID", "player", s.name)
 		return
 	}
 
 	providers := m.peerCache.getAllProviders()
 	if len(providers) == 0 {
-		slog.Debug("pecs: initSessionFromProviders skipped - no providers registered", "player", s.name)
 		return
 	}
-
-	slog.Debug("pecs: initSessionFromProviders starting", "player", s.name, "xuid", playerID, "providerCount", len(providers))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	for _, entry := range providers {
 		provider := entry.provider
-		providerName := provider.Name()
 
 		// Fetch initial data
-		slog.Debug("pecs: fetching from provider", "provider", providerName, "player", playerID)
 		components, err := provider.FetchPlayer(ctx, playerID)
-		if err != nil {
-			slog.Error("pecs: provider fetch failed", "provider", providerName, "player", playerID, "error", err)
+		if err != nil || len(components) == 0 {
 			continue
 		}
-		if len(components) == 0 {
-			slog.Debug("pecs: provider returned no components", "provider", providerName, "player", playerID)
-			continue
-		}
-
-		slog.Debug("pecs: provider returned components", "provider", providerName, "count", len(components))
 
 		// Add fetched components to session
 		for _, comp := range components {
 			if comp == nil {
 				continue
 			}
-			slog.Debug("pecs: adding component to session", "provider", providerName, "type", reflect.TypeOf(comp))
 			m.addComponentToSession(s, comp)
 		}
 
@@ -609,7 +594,6 @@ func (m *Manager) initSessionFromProviders(s *Session) {
 func (m *Manager) addComponentToSession(s *Session, component any) {
 	val := reflect.ValueOf(component)
 	if val.Kind() != reflect.Ptr {
-		slog.Warn("pecs: addComponentToSession skipped - not a pointer", "type", reflect.TypeOf(component))
 		return
 	}
 
@@ -625,14 +609,12 @@ func (m *Manager) addComponentToSession(s *Session, component any) {
 		newBytes := unsafe.Slice((*byte)(val.UnsafePointer()), size)
 		copy(oldBytes, newBytes)
 		s.mu.Unlock()
-		slog.Debug("pecs: component updated in place", "type", t.Name(), "id", id)
 		return
 	}
 
 	s.components[id] = val.UnsafePointer()
 	s.mask.Set(id)
 	s.mu.Unlock()
-	slog.Debug("pecs: component added to session", "type", t.Name(), "id", id, "player", s.name)
 }
 
 // processProviderUpdates handles real-time updates from a provider subscription.

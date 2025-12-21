@@ -2,6 +2,7 @@ package pecs
 
 import (
 	"github.com/df-mc/dragonfly/server/cmd"
+	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/player/form"
 )
@@ -63,6 +64,33 @@ func Command(src cmd.Source) (*player.Player, *Session) {
 // It is safe to access and modify components directly.
 func Form(sub form.Submitter) (*player.Player, *Session) {
 	p, ok := sub.(*player.Player)
+	if !ok {
+		return nil, nil
+	}
+
+	sess := getSessionFromPlayer(p)
+	return p, sess
+}
+
+// Item extracts the player and session from an item user.
+// Returns (nil, nil) if the user is not a player or has no session.
+//
+// Usage:
+//
+//	func (i MyItem) Use(tx *world.Tx, user item.User, ctx *item.UseContext) bool {
+//	    p, sess := pecs.Item(user)
+//	    if p == nil || sess == nil {
+//	        return
+//	    }
+//
+//	    // Use p and sess...
+//	}
+//
+// Concurrency:
+// Item uses are executed synchronously with the player, just like handlers.
+// It is safe to access and modify components directly.
+func Item(user item.User) (*player.Player, *Session) {
+	p, ok := user.(*player.Player)
 	if !ok {
 		return nil, nil
 	}

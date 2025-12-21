@@ -86,6 +86,12 @@ type ProviderOptions struct {
 	// If a subscription fails and data is older than this, resolution fails.
 	// Default: 5 minutes.
 	StaleTimeout int64
+
+	// Required indicates this provider must succeed for session creation.
+	// If true, NewSession returns an error if this provider fails.
+	// If false, provider failures are logged but session creation continues.
+	// Default: false.
+	Required bool
 }
 
 // defaultProviderOptions returns sensible defaults.
@@ -118,6 +124,14 @@ func WithGracePeriod(ms int64) ProviderOption {
 func WithStaleTimeout(ms int64) ProviderOption {
 	return func(o *ProviderOptions) {
 		o.StaleTimeout = ms
+	}
+}
+
+// WithRequired marks the provider as required for session creation.
+// If a required provider fails during NewSession, the session creation fails.
+func WithRequired(required bool) ProviderOption {
+	return func(o *ProviderOptions) {
+		o.Required = required
 	}
 }
 

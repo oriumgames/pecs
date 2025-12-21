@@ -108,7 +108,13 @@ func main() {
 
     for p := range srv.Accept() {
         sess := mngr.NewSession(p)
+        if err != nil {
+            p.Disconnect("failed to initialize session")
+            continue
+        }
+
         pecs.Add(sess, &Health{Current: 20, Max: 20})
+
         p.Handle(pecs.NewHandler(sess, p))
     }
 }

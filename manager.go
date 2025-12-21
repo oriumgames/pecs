@@ -2,6 +2,8 @@ package pecs
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"reflect"
 	"sync"
 	"time"
@@ -526,7 +528,7 @@ func (m *Manager) TickNumber() uint64 {
 // This should be called when a player joins and the returned session
 // should be passed to player.Handle() wrapped with NewHandler().
 // Automatically fetches data from registered PlayerProviders and subscribes to updates.
-func (m *Manager) NewSession(p *player.Player) *Session {
+func (m *Manager) NewSession(p *player.Player) (*Session, error) {
 	s := &Session{
 		handle:  p.H(),
 		uuid:    p.UUID(),
@@ -535,26 +537,31 @@ func (m *Manager) NewSession(p *player.Player) *Session {
 		manager: m,
 	}
 
+	// Auto-populate from registered providers
+	if err := m.initSessionFromProviders(s); err != nil {
+		return nil, err
+	}
+
 	s.updateWorldCache(p.Tx().World())
 	m.addSession(s)
 
-	// Auto-populate from registered providers
-	m.initSessionFromProviders(s)
-
-	return s
+	return s, nil
 }
 
 // initSessionFromProviders fetches initial data from all registered providers
 // and subscribes to updates for the local player.
-func (m *Manager) initSessionFromProviders(s *Session) {
+func (m *Manager) initSessionFromProviders(s *Session) error {
 	playerID := s.xuid
 	if playerID == "" {
-		return
+		// Not an error - just skip provider initialization
+		// Player can still play, just without provider-backed components
+		slog.Debug("pecs: skipping provider init - no XUID", "player", s.name)
+		return nil
 	}
 
 	providers := m.peerCache.getAllProviders()
 	if len(providers) == 0 {
-		return
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -562,10 +569,22 @@ func (m *Manager) initSessionFromProviders(s *Session) {
 
 	for _, entry := range providers {
 		provider := entry.provider
+		providerName := provider.Name()
 
 		// Fetch initial data
 		components, err := provider.FetchPlayer(ctx, playerID)
-		if err != nil || len(components) == 0 {
+		if err != nil {
+			if entry.options.Required {
+				return fmt.Errorf("required provider %s failed: %w", providerName, err)
+			}
+			slog.Warn("pecs: optional provider failed",
+				"provider", providerName,
+				"player", s.name,
+				"error", err)
+			continue
+		}
+
+		if len(components) == 0 {
 			continue
 		}
 
@@ -581,6 +600,13 @@ func (m *Manager) initSessionFromProviders(s *Session) {
 		updates := make(chan PlayerUpdate, 16)
 		sub, err := provider.SubscribePlayer(context.Background(), playerID, updates)
 		if err != nil {
+			if entry.options.Required {
+				return fmt.Errorf("required provider %s subscription failed: %w", providerName, err)
+			}
+			slog.Warn("pecs: optional provider subscription failed",
+				"provider", providerName,
+				"player", s.name,
+				"error", err)
 			close(updates)
 			continue
 		}
@@ -588,6 +614,8 @@ func (m *Manager) initSessionFromProviders(s *Session) {
 		s.addProviderSub(sub)
 		go m.processProviderUpdates(s, updates)
 	}
+
+	return nil
 }
 
 // addComponentToSession adds a component of any type to the session using reflection.

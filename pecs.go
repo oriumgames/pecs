@@ -21,9 +21,13 @@
 //	    Init()
 //
 //	for p := range srv.Accept() {
-//	    sess := mngr.NewSession(p)
+//	    sess, err := mngr.NewSession(p)
+//	    if err != nil {
+//	        p.Disconnect("failed to initialize session")
+//	        continue
+//	    }
 //	    pecs.Add(sess, &Health{Current: 100, Max: 100})
-//	    p.Handle(pecs.NewHandler(sess))
+//	    p.Handle(pecs.NewHandler(sess, p))
 //	}
 //
 // # Components

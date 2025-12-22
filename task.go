@@ -38,7 +38,6 @@ type scheduledTask struct {
 type taskQueue struct {
 	mu    sync.Mutex
 	heap  []*scheduledTask
-	timer *time.Timer
 	notif chan struct{}
 }
 

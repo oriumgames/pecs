@@ -139,9 +139,3 @@ func WithRequired(required bool) ProviderOption {
 		o.Required = required
 	}
 }
-
-// providerEntry holds a registered provider with its options.
-type providerEntry struct {
-	provider Provider
-	options  ProviderOptions
-}

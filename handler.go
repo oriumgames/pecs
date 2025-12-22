@@ -2,6 +2,7 @@ package pecs
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"reflect"
 	"sync"
@@ -167,9 +168,12 @@ func (s *Session) Dispatch(event any) {
 
 	eventType := reflect.TypeOf(event)
 	if eventType.Kind() != reflect.Pointer {
-		// This should not happen if handlers are registered correctly, but as a
-		// safety measure, we ignore non-pointer events in the dispatch path.
-		// The registration path already panics for these.
+		// Log warning for non-pointer events - these can't be dispatched via unsafe path.
+		// The registration path panics for handlers with value-type event parameters,
+		// but this can still happen if Dispatch is called with a value directly.
+		slog.Warn("pecs: dispatch ignored non-pointer event",
+			"type", eventType.String(),
+			"session", s.name)
 		return
 	}
 

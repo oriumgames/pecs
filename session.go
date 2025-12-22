@@ -56,6 +56,10 @@ type Session struct {
 	// providerSubs holds active provider subscriptions for auto-updates
 	providerSubs   []Subscription
 	providerSubsMu sync.Mutex
+
+	// expirations tracks component expiration times (ComponentID -> unix millis)
+	expirations  map[ComponentID]int64
+	expirationMu sync.Mutex
 }
 
 // Handle returns the underlying EntityHandle.
@@ -330,4 +334,66 @@ func (s *Session) removeTask(task *scheduledTask) {
 		}
 	}
 	s.taskMu.Unlock()
+}
+
+// processExpirations removes all components that have expired.
+// Called by scheduler on each tick.
+func (s *Session) processExpirations(nowMs int64) {
+	s.expirationMu.Lock()
+	if len(s.expirations) == 0 {
+		s.expirationMu.Unlock()
+		return
+	}
+
+	// Collect expired component IDs
+	var expired []ComponentID
+	for id, expireMs := range s.expirations {
+		if nowMs >= expireMs {
+			expired = append(expired, id)
+		}
+	}
+
+	// Remove from expirations map
+	for _, id := range expired {
+		delete(s.expirations, id)
+	}
+	s.expirationMu.Unlock()
+
+	// Remove expired components (this calls Detach if implemented)
+	for _, id := range expired {
+		s.removeComponentByID(id)
+	}
+}
+
+// removeComponentByID removes a component by its ID.
+func (s *Session) removeComponentByID(id ComponentID) {
+	s.mu.Lock()
+
+	ptr := s.components[id]
+	if ptr == nil {
+		s.mu.Unlock()
+		return
+	}
+
+	// Clear before calling Detach
+	s.components[id] = nil
+	s.mask.Clear(id)
+
+	s.mu.Unlock()
+
+	// Get type info for Detach and event
+	t := s.manager.registry.getType(id)
+	if t == nil {
+		return
+	}
+
+	// Call Detach if implemented
+	val := reflect.NewAt(t, ptr).Interface()
+	if detachable, ok := val.(Detachable); ok {
+		detachable.Detach(s)
+	}
+
+	s.Dispatch(ComponentDetachEvent{
+		ComponentType: t,
+	})
 }

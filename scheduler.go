@@ -157,6 +157,14 @@ func (s *Scheduler) tickLoop() {
 func (s *Scheduler) tick(now time.Time) {
 	s.tickNumber++
 	s.lastTick = now
+	nowMs := now.UnixMilli()
+
+	// Process component expirations first
+	s.manager.sessionsMu.RLock()
+	for _, sess := range s.manager.sessions {
+		sess.processExpirations(nowMs)
+	}
+	s.manager.sessionsMu.RUnlock()
 
 	// Group sessions by world for transaction batching
 	worldSessions := s.manager.groupedSessions()

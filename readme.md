@@ -226,6 +226,34 @@ func (t *Tracker) Detach(s *pecs.Session) {
 }
 ```
 
+**Temporary Components:**
+
+Components can be added with an expiration time. They are automatically removed when the time passes.
+
+```go
+// Add component that expires after duration
+pecs.AddFor(sess, &SpeedBoost{Multiplier: 2.0}, 10*time.Second)
+
+// Add component that expires at specific time
+pecs.AddUntil(sess, &EventBuff{Bonus: 50}, eventEndTime)
+
+// Check remaining time
+remaining := pecs.ExpiresIn[SpeedBoost](sess)
+if remaining > 0 {
+    fmt.Printf("Speed boost expires in %v\n", remaining)
+}
+
+// Get exact expiration time
+expireTime := pecs.ExpiresAt[SpeedBoost](sess)
+
+// Check if expired (but not yet removed)
+if pecs.Expired[SpeedBoost](sess) {
+    // Will be removed next scheduler tick
+}
+```
+
+Temporary components respect lifecycle hooks - `Detach` is called when the component expires.
+
 ### Systems
 
 Systems contain game logic and declare dependencies via struct tags. PECS automatically injects the required data before execution.

@@ -27,6 +27,13 @@ type peerCache struct {
 	// cleanupInterval is how often to run cache cleanup
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
+
+	// workerSem limits concurrent background goroutines
+	workerSem chan struct{}
+
+	// ctx and cancel for graceful shutdown of all background operations
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type playerProviderEntry struct {
@@ -51,6 +58,9 @@ type peerCacheEntry struct {
 	// status: 0=pending, 1=ready, 2=error, 3=closing
 	status atomic.Uint32
 
+	// errorAt is when the last error occurred (unix millis), used for retry logic
+	errorAt atomic.Int64
+
 	// subscriptions holds active provider subscriptions
 	subscriptions   []Subscription
 	subscriptionsMu sync.Mutex
@@ -62,6 +72,28 @@ type peerCacheEntry struct {
 	mu sync.Mutex
 }
 
+// Cache configuration constants
+const (
+	// cacheCleanupInterval is how often the cache cleanup runs
+	cacheCleanupInterval = 10 * time.Second
+
+	// cacheGracePeriodMs is how long to keep entries after last reference (milliseconds)
+	cacheGracePeriodMs = 30_000
+
+	// cacheFetchTimeout is the timeout for provider fetch operations
+	cacheFetchTimeout = 5 * time.Second
+
+	// cacheUpdateChannelSize is the buffer size for update channels
+	cacheUpdateChannelSize = 16
+
+	// cacheMaxWorkers limits concurrent background goroutines per cache
+	// Set high enough to not throttle normal operation, but prevents unbounded growth
+	cacheMaxWorkers = 1000
+
+	// cacheRetryDelayMs is how long to wait before retrying a failed fetch (milliseconds)
+	cacheRetryDelayMs = 5_000
+)
+
 const (
 	cacheStatusPending = iota
 	cacheStatusReady
@@ -71,14 +103,46 @@ const (
 
 // newPeerCache creates a new peer cache.
 func newPeerCache(manager *Manager) *peerCache {
+	ctx, cancel := context.WithCancel(context.Background())
 	pc := &peerCache{
 		manager:         manager,
 		providerIndex:   make(map[reflect.Type][]PlayerProvider),
-		cleanupInterval: 10 * time.Second,
+		cleanupInterval: cacheCleanupInterval,
 		stopCleanup:     make(chan struct{}),
+		workerSem:       make(chan struct{}, cacheMaxWorkers),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 	go pc.cleanupLoop()
 	return pc
+}
+
+// spawnWorker runs fn in a goroutine if capacity is available, otherwise runs inline.
+// Checks for shutdown before spawning to prevent goroutine leaks during shutdown.
+func (pc *peerCache) spawnWorker(fn func()) {
+	// Check if shutting down
+	select {
+	case <-pc.ctx.Done():
+		return // Don't spawn new work during shutdown
+	default:
+	}
+
+	select {
+	case pc.workerSem <- struct{}{}:
+		go func() {
+			defer func() { <-pc.workerSem }()
+			// Check again in case shutdown happened while waiting
+			select {
+			case <-pc.ctx.Done():
+				return
+			default:
+				fn()
+			}
+		}()
+	default:
+		// Semaphore full - run inline to avoid blocking
+		fn()
+	}
 }
 
 // registerProvider adds a player provider to the cache.
@@ -122,8 +186,21 @@ func (pc *peerCache) resolve(playerID string, componentType reflect.Type) unsafe
 	entry := pc.getOrCreateEntry(playerID)
 	entry.refCount.Add(1)
 
-	// Wait for ready state if pending
-	if entry.status.Load() == cacheStatusPending {
+	status := entry.status.Load()
+
+	// Check if error state should be reset for retry
+	if status == cacheStatusError {
+		now := time.Now().UnixMilli()
+		if now-entry.errorAt.Load() > cacheRetryDelayMs {
+			// Enough time has passed, try again
+			if entry.status.CompareAndSwap(cacheStatusError, cacheStatusPending) {
+				status = cacheStatusPending
+			}
+		}
+	}
+
+	// Fetch if pending
+	if status == cacheStatusPending {
 		entry.mu.Lock()
 		if entry.status.Load() == cacheStatusPending {
 			pc.fetchAndSubscribe(entry, componentType)
@@ -194,7 +271,7 @@ func (pc *peerCache) getOrCreateEntry(playerID string) *peerCacheEntry {
 	entry := &peerCacheEntry{
 		playerID: playerID,
 		cache:    pc,
-		updateCh: make(chan PlayerUpdate, 16),
+		updateCh: make(chan PlayerUpdate, cacheUpdateChannelSize),
 	}
 
 	actual, loaded := pc.entries.LoadOrStore(playerID, entry)
@@ -203,18 +280,19 @@ func (pc *peerCache) getOrCreateEntry(playerID string) *peerCacheEntry {
 	}
 
 	// Start update processor
-	go entry.processUpdates()
+	pc.spawnWorker(entry.processUpdates)
 
 	return entry
 }
 
 // fetchAndSubscribe fetches initial data and sets up subscriptions.
 func (pc *peerCache) fetchAndSubscribe(entry *peerCacheEntry, componentType reflect.Type) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheFetchTimeout)
 	defer cancel()
 
 	providers := pc.getProviders(componentType)
 	if len(providers) == 0 {
+		entry.errorAt.Store(time.Now().UnixMilli())
 		entry.status.Store(cacheStatusError)
 		return
 	}
@@ -265,13 +343,14 @@ func (pc *peerCache) fetchAndSubscribe(entry *peerCacheEntry, componentType refl
 	if anySuccess.Load() {
 		entry.status.Store(cacheStatusReady)
 	} else {
+		entry.errorAt.Store(time.Now().UnixMilli())
 		entry.status.Store(cacheStatusError)
 	}
 }
 
 // batchFetch fetches multiple players at once.
 func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*peerCacheEntry, componentType reflect.Type, results []unsafe.Pointer) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheFetchTimeout)
 	defer cancel()
 
 	providers := pc.getProviders(componentType)
@@ -308,6 +387,7 @@ func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*pe
 
 			components, ok := componentsMap[id]
 			if !ok || len(components) == 0 {
+				entry.errorAt.Store(now)
 				entry.status.Store(cacheStatusError)
 				continue
 			}
@@ -332,7 +412,9 @@ func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*pe
 			entry.status.Store(cacheStatusReady)
 
 			// Subscribe for updates (async)
-			go pc.subscribeEntry(entry, p)
+			capturedEntry := entry
+			capturedProvider := p
+			pc.spawnWorker(func() { pc.subscribeEntry(capturedEntry, capturedProvider) })
 		}
 
 		break // Only use first provider
@@ -341,8 +423,8 @@ func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*pe
 
 // subscribeEntry sets up subscription for an entry.
 func (pc *peerCache) subscribeEntry(entry *peerCacheEntry, provider PlayerProvider) {
-	ctx := context.Background()
-	sub, err := provider.SubscribePlayer(ctx, entry.playerID, entry.updateCh)
+	// Use cache's context so subscriptions are cancelled on shutdown
+	sub, err := provider.SubscribePlayer(pc.ctx, entry.playerID, entry.updateCh)
 	if err != nil {
 		return
 	}
@@ -425,7 +507,7 @@ func (pc *peerCache) cleanup() {
 		if entry.refCount.Load() <= 0 {
 			// Check grace period (default 30 seconds)
 			age := now - entry.fetchedAt.Load()
-			if age > 30_000 {
+			if age > cacheGracePeriodMs {
 				entry.close()
 				pc.entries.Delete(key)
 			}
@@ -437,6 +519,9 @@ func (pc *peerCache) cleanup() {
 
 // stop shuts down the peer cache.
 func (pc *peerCache) stop() {
+	// Cancel context first to stop all background operations
+	pc.cancel()
+
 	close(pc.stopCleanup)
 
 	pc.entries.Range(func(key, value any) bool {
@@ -464,6 +549,13 @@ type sharedCache struct {
 	// cleanupInterval is how often to run cache cleanup
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
+
+	// workerSem limits concurrent background goroutines
+	workerSem chan struct{}
+
+	// ctx and cancel for graceful shutdown of all background operations
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type entityProviderEntry struct {
@@ -491,6 +583,9 @@ type sharedCacheEntry struct {
 	// status: 0=pending, 1=ready, 2=error, 3=closing
 	status atomic.Uint32
 
+	// errorAt is when the last error occurred (unix millis), used for retry logic
+	errorAt atomic.Int64
+
 	// subscription holds the active provider subscription
 	subscription   Subscription
 	subscriptionMu sync.Mutex
@@ -504,14 +599,45 @@ type sharedCacheEntry struct {
 
 // newSharedCache creates a new shared cache.
 func newSharedCache(manager *Manager) *sharedCache {
+	ctx, cancel := context.WithCancel(context.Background())
 	sc := &sharedCache{
 		manager:         manager,
 		providerIndex:   make(map[reflect.Type][]EntityProvider),
-		cleanupInterval: 10 * time.Second,
+		cleanupInterval: cacheCleanupInterval,
 		stopCleanup:     make(chan struct{}),
+		workerSem:       make(chan struct{}, cacheMaxWorkers),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 	go sc.cleanupLoop()
 	return sc
+}
+
+// spawnWorker runs fn in a goroutine if capacity is available, otherwise runs inline.
+// Checks for shutdown before spawning to prevent goroutine leaks during shutdown.
+func (sc *sharedCache) spawnWorker(fn func()) {
+	// Check if shutting down
+	select {
+	case <-sc.ctx.Done():
+		return // Don't spawn new work during shutdown
+	default:
+	}
+
+	select {
+	case sc.workerSem <- struct{}{}:
+		go func() {
+			defer func() { <-sc.workerSem }()
+			// Check again in case shutdown happened while waiting
+			select {
+			case <-sc.ctx.Done():
+				return
+			default:
+				fn()
+			}
+		}()
+	default:
+		fn()
+	}
 }
 
 // registerProvider adds an entity provider to the cache.
@@ -545,8 +671,20 @@ func (sc *sharedCache) resolve(entityID string, dataType reflect.Type) unsafe.Po
 	entry := sc.getOrCreateEntry(entityID, dataType)
 	entry.refCount.Add(1)
 
-	// Wait for ready state if pending
-	if entry.status.Load() == cacheStatusPending {
+	status := entry.status.Load()
+
+	// Check if error state should be reset for retry
+	if status == cacheStatusError {
+		now := time.Now().UnixMilli()
+		if now-entry.errorAt.Load() > cacheRetryDelayMs {
+			if entry.status.CompareAndSwap(cacheStatusError, cacheStatusPending) {
+				status = cacheStatusPending
+			}
+		}
+	}
+
+	// Fetch if pending
+	if status == cacheStatusPending {
 		entry.mu.Lock()
 		if entry.status.Load() == cacheStatusPending {
 			sc.fetchAndSubscribe(entry, dataType)
@@ -610,7 +748,7 @@ func (sc *sharedCache) resolveMany(entityIDs []string, dataType reflect.Type) []
 
 // batchFetch fetches multiple entities at once.
 func (sc *sharedCache) batchFetch(entityIDs []string, indices []int, entries []*sharedCacheEntry, dataType reflect.Type, results []unsafe.Pointer) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheFetchTimeout)
 	defer cancel()
 
 	providers := sc.getProviders(dataType)
@@ -649,6 +787,7 @@ func (sc *sharedCache) batchFetch(entityIDs []string, indices []int, entries []*
 
 			data, ok := dataMap[id]
 			if !ok || data == nil {
+				entry.errorAt.Store(now)
 				entry.status.Store(cacheStatusError)
 				continue
 			}
@@ -661,7 +800,9 @@ func (sc *sharedCache) batchFetch(entityIDs []string, indices []int, entries []*
 			entry.status.Store(cacheStatusReady)
 
 			// Subscribe for updates (async)
-			go sc.subscribeEntry(entry, p)
+			capturedEntry := entry
+			capturedProvider := p
+			sc.spawnWorker(func() { sc.subscribeEntry(capturedEntry, capturedProvider) })
 		}
 
 		return // Success, don't try other providers
@@ -677,8 +818,8 @@ func (sc *sharedCache) batchFetch(entityIDs []string, indices []int, entries []*
 
 // subscribeEntry sets up subscription for an entry.
 func (sc *sharedCache) subscribeEntry(entry *sharedCacheEntry, provider EntityProvider) {
-	ctx := context.Background()
-	sub, err := provider.SubscribeEntity(ctx, entry.entityID, entry.updateCh)
+	// Use cache's context so subscriptions are cancelled on shutdown
+	sub, err := provider.SubscribeEntity(sc.ctx, entry.entityID, entry.updateCh)
 	if err != nil {
 		return
 	}
@@ -701,7 +842,7 @@ func (sc *sharedCache) getOrCreateEntry(entityID string, dataType reflect.Type) 
 		entityID: entityID,
 		cache:    sc,
 		dataType: dataType,
-		updateCh: make(chan any, 16),
+		updateCh: make(chan any, cacheUpdateChannelSize),
 	}
 
 	actual, loaded := sc.entries.LoadOrStore(key, entry)
@@ -710,18 +851,19 @@ func (sc *sharedCache) getOrCreateEntry(entityID string, dataType reflect.Type) 
 	}
 
 	// Start update processor
-	go entry.processUpdates()
+	sc.spawnWorker(entry.processUpdates)
 
 	return entry
 }
 
 // fetchAndSubscribe fetches initial data and sets up subscription.
 func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType reflect.Type) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheFetchTimeout)
 	defer cancel()
 
 	providers := sc.getProviders(dataType)
 	if len(providers) == 0 {
+		entry.errorAt.Store(time.Now().UnixMilli())
 		entry.status.Store(cacheStatusError)
 		return
 	}
@@ -753,6 +895,7 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 		return
 	}
 
+	entry.errorAt.Store(time.Now().UnixMilli())
 	entry.status.Store(cacheStatusError)
 }
 
@@ -825,7 +968,7 @@ func (sc *sharedCache) cleanup() {
 		if entry.refCount.Load() <= 0 {
 			// Check grace period (default 30 seconds)
 			age := now - entry.fetchedAt.Load()
-			if age > 30_000 {
+			if age > cacheGracePeriodMs {
 				entry.close()
 				sc.entries.Delete(key)
 			}
@@ -837,6 +980,9 @@ func (sc *sharedCache) cleanup() {
 
 // stop shuts down the shared cache.
 func (sc *sharedCache) stop() {
+	// Cancel context first to stop all background operations
+	sc.cancel()
+
 	close(sc.stopCleanup)
 
 	sc.entries.Range(func(key, value any) bool {

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -146,6 +147,116 @@ func Add[T any](s *Session, component *T) {
 	s.Dispatch(ComponentAttachEvent{
 		ComponentType: t,
 	})
+}
+
+// AddFor attaches a component to the session that will be automatically removed
+// after the specified duration. Useful for buffs, debuffs, and temporary effects.
+//
+// If a component of this type already exists, it is replaced and the expiration is reset.
+// If the component implements Attachable, its Attach method is called.
+// When the component expires, if it implements Detachable, its Detach method is called.
+//
+// Example:
+//
+//	pecs.AddFor(sess, &SpeedBoost{Multiplier: 2.0}, 10*time.Second)
+func AddFor[T any](s *Session, component *T, duration time.Duration) {
+	AddUntil(s, component, time.Now().Add(duration))
+}
+
+// AddUntil attaches a component to the session that will be automatically removed
+// at the specified time. Useful for buffs, debuffs, and temporary effects.
+//
+// If a component of this type already exists, it is replaced and the expiration is reset.
+// If the component implements Attachable, its Attach method is called.
+// When the component expires, if it implements Detachable, its Detach method is called.
+//
+// Example:
+//
+//	pecs.AddUntil(sess, &EventBuff{}, eventEndTime)
+func AddUntil[T any](s *Session, component *T, expireAt time.Time) {
+	if s == nil || component == nil || s.manager == nil {
+		return
+	}
+
+	t := reflect.TypeFor[T]()
+	id := s.manager.registry.register(t)
+
+	// Add the component first
+	Add(s, component)
+
+	// Set expiration
+	s.expirationMu.Lock()
+	if s.expirations == nil {
+		s.expirations = make(map[ComponentID]int64)
+	}
+	s.expirations[id] = expireAt.UnixMilli()
+	s.expirationMu.Unlock()
+}
+
+// ExpiresIn returns the remaining duration until a component expires.
+// Returns 0 if the component doesn't exist or has no expiration set.
+// Returns negative duration if the component has already expired (but not yet removed).
+//
+// Example:
+//
+//	remaining := pecs.ExpiresIn[SpeedBoost](sess)
+//	if remaining > 0 {
+//	    fmt.Printf("Speed boost expires in %v\n", remaining)
+//	}
+func ExpiresIn[T any](s *Session) time.Duration {
+	expireAt := ExpiresAt[T](s)
+	if expireAt.IsZero() {
+		return 0
+	}
+	return time.Until(expireAt)
+}
+
+// Expired returns true if the component has an expiration set AND that time has passed.
+// Returns false if the component has no expiration or hasn't expired yet.
+// Note: The component may still exist briefly after expiring until the next scheduler tick removes it.
+//
+// Example:
+//
+//	if pecs.Expired[SpeedBoost](sess) {
+//	    // Buff has expired (or will be removed very soon)
+//	}
+func Expired[T any](s *Session) bool {
+	expireAt := ExpiresAt[T](s)
+	if expireAt.IsZero() {
+		return false // No expiration set
+	}
+	return time.Now().After(expireAt)
+}
+
+// ExpiresAt returns the time when a component will expire.
+// Returns zero time if the component doesn't exist or has no expiration set.
+//
+// Example:
+//
+//	expireTime := pecs.ExpiresAt[SpeedBoost](sess)
+//	if !expireTime.IsZero() {
+//	    fmt.Printf("Speed boost expires at %v\n", expireTime)
+//	}
+func ExpiresAt[T any](s *Session) time.Time {
+	if s == nil || s.manager == nil {
+		return time.Time{}
+	}
+
+	t := reflect.TypeFor[T]()
+	id, ok := s.manager.registry.getID(t)
+	if !ok {
+		return time.Time{}
+	}
+
+	s.expirationMu.Lock()
+	expireMs, exists := s.expirations[id]
+	s.expirationMu.Unlock()
+
+	if !exists {
+		return time.Time{}
+	}
+
+	return time.UnixMilli(expireMs)
 }
 
 // Remove detaches a component from the session.

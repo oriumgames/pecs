@@ -49,6 +49,9 @@ type FieldMeta struct {
 	// Offset is the field offset in the struct for unsafe injection
 	Offset uintptr
 
+	// Size is the field size in bytes (for payload field zeroing)
+	Size uintptr
+
 	// Name is the field name for debugging
 	Name string
 
@@ -268,7 +271,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 		}
 
 		// Check for *Session field - starts a new window
-		if field.Type == reflect.TypeOf((*Session)(nil)) {
+		if field.Type == reflect.TypeFor[*Session]() {
 			if sessionCount > 0 {
 				currentWindowIndex++
 			}
@@ -292,7 +295,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 		}
 
 		// Check for *Manager field
-		if field.Type == reflect.TypeOf((*Manager)(nil)) {
+		if field.Type == reflect.TypeFor[*Manager]() {
 			fieldMeta.Kind = KindManager
 			fieldMeta.WindowIndex = currentWindowIndex
 			meta.Fields = append(meta.Fields, fieldMeta)
@@ -547,7 +550,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 			compType := field.Type.Elem()
 
 			// Skip Session pointers (already handled)
-			if compType == reflect.TypeOf(Session{}) {
+			if compType == reflect.TypeFor[Session]() {
 				continue
 			}
 
@@ -582,6 +585,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 		// Everything else is payload
 		fieldMeta.Kind = KindPayload
 		fieldMeta.ComponentType = field.Type
+		fieldMeta.Size = field.Type.Size()
 		meta.Fields = append(meta.Fields, fieldMeta)
 	}
 

@@ -49,6 +49,11 @@ type EntityProvider interface {
 	// Returns nil (not error) if the entity doesn't exist.
 	FetchEntity(ctx context.Context, entityID string) (any, error)
 
+	// FetchEntities batch-fetches components for multiple entities.
+	// Returns a map of entityID -> component.
+	// Missing entities should be omitted from the map.
+	FetchEntities(ctx context.Context, entityIDs []string) (map[string]any, error)
+
 	// SubscribeEntity starts receiving real-time updates for an entity.
 	// Updates should be sent to the channel until the subscription is closed.
 	// Return an error if the entity doesn't exist or subscription fails.

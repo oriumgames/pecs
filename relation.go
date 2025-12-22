@@ -1,10 +1,16 @@
 package pecs
 
 import (
-	"maps"
 	"reflect"
 	"sync"
+	"unsafe"
 )
+
+// Resolved holds a resolved relation with both session and component.
+type Resolved[T any] struct {
+	Session   *Session
+	Component *T
+}
 
 // Relation represents a reference from one session to another.
 // The type parameter T indicates what component the target session must have.
@@ -53,15 +59,24 @@ func (r *Relation[T]) Valid() bool {
 	return Has[T](target)
 }
 
-// Target returns the raw target session pointer.
-// This is primarily for internal use.
-func (r *Relation[T]) Target() *Session {
-	return r.target
+// Resolve retrieves the target session and its component of type T.
+// Returns (nil, nil, false) if the relation is unset, the target is closed,
+// or the component is missing.
+func (r *Relation[T]) Resolve() (*Session, *T, bool) {
+	s := r.Get()
+	if s == nil {
+		return nil, nil, false
+	}
+	comp := Get[T](s)
+	if comp == nil {
+		return s, nil, false
+	}
+	return s, comp, true
 }
 
 // TargetType returns the reflect.Type of the component the target must have.
 func (r *Relation[T]) TargetType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
+	return reflect.TypeFor[T]()
 }
 
 // RelationSet represents a set of references to other sessions.
@@ -126,125 +141,173 @@ func (rs *RelationSet[T]) Len() int {
 	return n
 }
 
-// Iter returns a channel that yields all valid target sessions.
-// Sessions that are closed are automatically removed during iteration.
-func (rs *RelationSet[T]) Iter() <-chan *Session {
-	ch := make(chan *Session)
-	go func() {
-		defer close(ch)
-		rs.mu.RLock()
-		targets := make([]*Session, 0, len(rs.targets))
-		for target := range rs.targets {
-			targets = append(targets, target)
-		}
-		rs.mu.RUnlock()
-
-		var toRemove []*Session
-		for _, target := range targets {
-			if target.closed.Load() {
-				toRemove = append(toRemove, target)
-				continue
-			}
-			ch <- target
-		}
-
-		// Clean up closed sessions
-		if len(toRemove) > 0 {
-			rs.mu.Lock()
-			for _, target := range toRemove {
-				delete(rs.targets, target)
-			}
-			rs.mu.Unlock()
-		}
-	}()
-	return ch
-}
-
-// All returns a slice of all valid target sessions.
-// This is more efficient than Iter() when you need all sessions at once.
+// All returns all non-closed target sessions.
+// Closed sessions are automatically removed from the set during this call.
 func (rs *RelationSet[T]) All() []*Session {
 	rs.mu.RLock()
 	targets := make([]*Session, 0, len(rs.targets))
+	var toRemove []*Session
 	for target := range rs.targets {
-		if !target.closed.Load() {
+		if target.closed.Load() {
+			toRemove = append(toRemove, target)
+		} else {
 			targets = append(targets, target)
 		}
 	}
 	rs.mu.RUnlock()
+
+	// Clean up closed sessions
+	if len(toRemove) > 0 {
+		rs.mu.Lock()
+		for _, target := range toRemove {
+			delete(rs.targets, target)
+		}
+		rs.mu.Unlock()
+	}
+
 	return targets
 }
 
-// AllValid returns all sessions that are valid and have the required component.
-func (rs *RelationSet[T]) AllValid() []*Session {
+// Resolve returns all valid sessions with their components.
+// A session is valid if it's not closed and has the required component T.
+// Invalid sessions are automatically removed from the set during this call.
+func (rs *RelationSet[T]) Resolve() []Resolved[T] {
 	rs.mu.RLock()
-	targets := make([]*Session, 0, len(rs.targets))
+	results := make([]Resolved[T], 0, len(rs.targets))
+	var toRemove []*Session
 	for target := range rs.targets {
-		if !target.closed.Load() && Has[T](target) {
-			targets = append(targets, target)
+		if target.closed.Load() {
+			toRemove = append(toRemove, target)
+			continue
+		}
+		comp := Get[T](target)
+		if comp != nil {
+			results = append(results, Resolved[T]{
+				Session:   target,
+				Component: comp,
+			})
 		}
 	}
 	rs.mu.RUnlock()
-	return targets
+
+	// Clean up closed sessions
+	if len(toRemove) > 0 {
+		rs.mu.Lock()
+		for _, target := range toRemove {
+			delete(rs.targets, target)
+		}
+		rs.mu.Unlock()
+	}
+
+	return results
 }
 
-// Targets returns a copy of the underlying target map.
-// This is primarily for internal use.
-func (rs *RelationSet[T]) Targets() map[*Session]struct{} {
+// TargetType returns the reflect.Type of the component targets must have.
+func (rs *RelationSet[T]) TargetType() reflect.Type {
+	return reflect.TypeFor[T]()
+}
+
+// getTargets returns a copy of the underlying target map.
+// This is for internal use only.
+func (rs *RelationSet[T]) getTargets() map[*Session]struct{} {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 	if rs.targets == nil {
 		return nil
 	}
 	result := make(map[*Session]struct{}, len(rs.targets))
-	maps.Copy(result, rs.targets)
-	return result
-}
-
-// TargetType returns the reflect.Type of the component targets must have.
-func (rs *RelationSet[T]) TargetType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
-}
-
-// relationCleaner is an interface for types that contain relations.
-type relationCleaner interface {
-	clearRelationsTo(target *Session)
-}
-
-// clearRelationsTo removes all relation references to the given target session.
-// This is called when a session is closed.
-func clearRelationsTo(component any, target *Session) {
-	if cleaner, ok := component.(relationCleaner); ok {
-		cleaner.clearRelationsTo(target)
-		return
+	for k, v := range rs.targets {
+		result[k] = v
 	}
-
-	// Use reflection for generic Relation[T] and RelationSet[T] fields
-	clearRelationsReflect(component, target)
+	return result
 }
 
 // isRelationType checks if a type is Relation[T].
 func isRelationType(t any) bool {
-	// Check if it implements the relation interface
-	_, ok := t.(interface{ Target() *Session })
+	_, ok := t.(interface{ Get() *Session })
 	return ok
 }
 
 // isRelationSetType checks if a type is RelationSet[T].
 func isRelationSetType(t any) bool {
-	_, ok := t.(interface{ Targets() map[*Session]struct{} })
+	_, ok := t.(interface{ getTargets() map[*Session]struct{} })
 	return ok
 }
 
-// Resolve retrieves the target session and its component of type T from a Relation.
-// Returns (nil, nil, false) if the relation is unset, the target is closed, or the component is missing.
-func Resolve[T any](r Relation[T]) (*Session, *T, bool) {
-	s := r.Get()
-	if s == nil {
-		return nil, nil, false
+// relationSetLayout matches the memory layout of RelationSet[T].
+type relationSetLayout struct {
+	mu      sync.RWMutex
+	targets map[*Session]struct{}
+}
+
+// getRelationSetTargets gets all target sessions from a RelationSet[T] pointer.
+func getRelationSetTargets(ptr unsafe.Pointer) []*Session {
+	layout := (*relationSetLayout)(ptr)
+	layout.mu.RLock()
+	defer layout.mu.RUnlock()
+
+	if layout.targets == nil {
+		return nil
 	}
-	comp := Get[T](s)
-	if comp == nil {
-		return s, nil, false
+
+	result := make([]*Session, 0, len(layout.targets))
+	for s := range layout.targets {
+		if !s.closed.Load() {
+			result = append(result, s)
+		}
 	}
-	return s, comp, true
+	return result
+}
+
+// relationLayout matches the memory layout of Relation[T].
+// Relation[T] is just: struct { target *Session }
+type relationLayout struct {
+	target *Session
+}
+
+// clearRelationsTo clears all relations to a target session in a component.
+// This is called when a session is closed.
+// Uses unsafe pointer arithmetic for performance instead of reflection.
+func clearRelationsTo(componentPtr any, target *Session) {
+	val := reflect.ValueOf(componentPtr)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
+		return
+	}
+
+	typ := val.Type()
+	basePtr := val.UnsafeAddr()
+
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		fieldType := field.Type
+
+		if fieldType.Kind() != reflect.Struct {
+			continue
+		}
+
+		// Use type name check - this is still needed but we avoid repeated reflection
+		typeName := fieldType.String()
+
+		// Check for Relation[T]
+		if len(typeName) > 14 && typeName[:14] == "pecs.Relation[" {
+			// Direct unsafe access to Relation[T].target
+			relPtr := (*relationLayout)(unsafe.Pointer(basePtr + field.Offset))
+			if relPtr.target == target {
+				relPtr.target = nil
+			}
+			continue
+		}
+
+		// Check for RelationSet[T]
+		if len(typeName) > 17 && typeName[:17] == "pecs.RelationSet[" {
+			// Direct unsafe access to RelationSet[T]
+			relSetPtr := (*relationSetLayout)(unsafe.Pointer(basePtr + field.Offset))
+			relSetPtr.mu.Lock()
+			delete(relSetPtr.targets, target)
+			relSetPtr.mu.Unlock()
+		}
+	}
 }

@@ -67,53 +67,19 @@
 //	pecs:"res"     Bundle resource
 //	pecs:"res,mut" Mutable resource
 //	pecs:"inj"     Global injection
+//	pecs:"peer"    Peer[T] resolution (remote player data)
+//	pecs:"shared"  Shared[T] resolution (shared entity data)
 package pecs
+
+import "github.com/df-mc/dragonfly/server/world"
 
 // Version is the PECS version.
 const Version = "1.0.0"
 
-// Re-export types for convenient access.
-type (
-	// Session is re-exported for documentation visibility.
-	// See the Session type for full documentation.
-	SessionType = Session
-
-	// Bundle is re-exported for documentation visibility.
-	BundleType = Bundle
-
-	// Builder is re-exported for documentation visibility.
-	BuilderType = Builder
-
-	// Manager is re-exported for documentation visibility.
-	ManagerType = Manager
-)
-
-// Re-export phantom types.
-type (
-	// WithType is the With[T] phantom type for requiring components.
-	WithType[T any] = With[T]
-
-	// WithoutType is the Without[T] phantom type for excluding components.
-	WithoutType[T any] = Without[T]
-)
-
-// Re-export relation types.
-type (
-	// RelationType is the Relation[T] type for single references.
-	RelationType[T any] = Relation[T]
-
-	// RelationSetType is the RelationSet[T] type for multiple references.
-	RelationSetType[T any] = RelationSet[T]
-)
-
-// Re-export lifecycle interfaces.
-type (
-	// AttachableType is the Attachable interface.
-	AttachableType = Attachable
-
-	// DetachableType is the Detachable interface.
-	DetachableType = Detachable
-)
-
-// Re-export Runnable interface.
-type RunnableType = Runnable
+// Runnable is the interface implemented by loops and tasks.
+// The Run method contains the system's logic and is called when the system executes.
+// The tx parameter is the active world transaction - use it instead of opening new transactions
+// to avoid deadlocks. All sessions in a system are guaranteed to be in this transaction's world.
+type Runnable interface {
+	Run(tx *world.Tx)
+}

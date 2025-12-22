@@ -2,6 +2,7 @@ package pecs
 
 import (
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"unsafe"
 )
@@ -23,6 +24,15 @@ import (
 //	    Session    *Session
 //	    Social     *SocialData
 //	    FriendInfo *FriendProfile `pecs:"peer"` // Resolved from Social.BestFriend
+//	}
+//
+//	// In a command - manual resolution
+//	func (c ShowFriendCommand) Run(src cmd.Source, out *cmd.Output, tx *world.Tx) {
+//	    p, sess := pecs.MustCommand(src)
+//	    social := pecs.Get[SocialData](sess)
+//	    if friend, ok := social.BestFriend.Resolve(sess.Manager()); ok {
+//	        out.Printf("Best friend: %s", friend.Username)
+//	    }
 //	}
 type Peer[T any] struct {
 	id string
@@ -48,9 +58,27 @@ func (p *Peer[T]) IsSet() bool {
 	return p.id != ""
 }
 
+// Resolve fetches the target player's component.
+// If the player is local, returns their component directly.
+// If remote, fetches via the registered PlayerProvider.
+// Returns (nil, false) if the peer is not set, player doesn't exist,
+// or the component is not available.
+func (p *Peer[T]) Resolve(m *Manager) (*T, bool) {
+	if m == nil || p.id == "" {
+		return nil, false
+	}
+
+	t := reflect.TypeFor[T]()
+	ptr := m.ResolvePeer(p.id, t)
+	if ptr == nil {
+		return nil, false
+	}
+	return (*T)(ptr), true
+}
+
 // TargetType returns the reflect.Type of the component T.
 func (p *Peer[T]) TargetType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
+	return reflect.TypeFor[T]()
 }
 
 // peerTypeInfo is used for type detection during system analysis.
@@ -120,10 +148,8 @@ func (ps *PeerSet[T]) Add(playerID string) {
 		var newIDs []string
 		if old != nil {
 			// Check for duplicate
-			for _, id := range *old {
-				if id == playerID {
-					return
-				}
+			if slices.Contains(*old, playerID) {
+				return
 			}
 			newIDs = make([]string, len(*old)+1)
 			copy(newIDs, *old)
@@ -191,9 +217,34 @@ func (ps *PeerSet[T]) Len() int {
 	return len(*ptr)
 }
 
+// Resolve fetches all target players' components.
+// Returns only successfully resolved components (nil entries are filtered out).
+func (ps *PeerSet[T]) Resolve(m *Manager) []*T {
+	if m == nil {
+		return nil
+	}
+
+	ids := ps.IDs()
+	if len(ids) == 0 {
+		return nil
+	}
+
+	t := reflect.TypeFor[T]()
+	ptrs := m.ResolvePeers(ids, t)
+
+	// Filter nil results
+	results := make([]*T, 0, len(ptrs))
+	for _, ptr := range ptrs {
+		if ptr != nil {
+			results = append(results, (*T)(ptr))
+		}
+	}
+	return results
+}
+
 // TargetType returns the reflect.Type of the component T.
 func (ps *PeerSet[T]) TargetType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
+	return reflect.TypeFor[T]()
 }
 
 type peerSetTypeInfo interface {

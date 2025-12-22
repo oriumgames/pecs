@@ -115,7 +115,7 @@ func Add[T any](s *Session, component *T) {
 		return
 	}
 
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	id := s.manager.registry.register(t)
 
 	s.mu.Lock()
@@ -158,7 +158,7 @@ func Remove[T any](s *Session) {
 		return
 	}
 
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	id, ok := s.manager.registry.getID(t)
 	if !ok {
 		return // Component type not registered, nothing to remove
@@ -198,7 +198,7 @@ func Get[T any](s *Session) *T {
 		return nil
 	}
 
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	id, ok := s.manager.registry.getID(t)
 	if !ok {
 		return nil // Component type not registered
@@ -223,7 +223,7 @@ func Has[T any](s *Session) bool {
 		return false
 	}
 
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	id, ok := s.manager.registry.getID(t)
 	if !ok {
 		return false // Component type not registered
@@ -246,7 +246,7 @@ func GetOrAdd[T any](s *Session, defaultVal *T) *T {
 		return nil
 	}
 
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	id := s.manager.registry.register(t)
 
 	// Fast path: check if already exists

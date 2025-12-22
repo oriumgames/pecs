@@ -233,38 +233,43 @@ func (s *Session) close() {
 		task.cancelled.Store(true)
 	}
 
-	// Collect components that need Detach called
+	// Collect components that need Detach called, while session is still intact.
 	type detachInfo struct {
 		component Detachable
 	}
 	var toDetach []detachInfo
 
-	s.mu.Lock()
+	s.mu.RLock()
 	for id := range ComponentID(MaxComponents) {
 		ptr := s.components[id]
 		if ptr == nil {
 			continue
 		}
 
-		s.components[id] = nil
-		s.mask.Clear(id)
-
 		// Check if component implements Detachable
 		t := s.manager.registry.getType(id)
 		if t != nil {
-			// Create a pointer to the component and check interface
 			val := reflect.NewAt(t, ptr).Interface()
 			if d, ok := val.(Detachable); ok {
 				toDetach = append(toDetach, detachInfo{component: d})
 			}
 		}
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
-	// Call Detach outside the lock
+	// Call Detach outside any session lock.
+	// The session is still fully readable for these hooks.
 	for _, info := range toDetach {
 		info.component.Detach(s)
 	}
+
+	// Now, clear all component data from the session.
+	s.mu.Lock()
+	for id := range ComponentID(MaxComponents) {
+		s.components[id] = nil
+	}
+	s.mask = Bitmask{} // Zero out the bitmask
+	s.mu.Unlock()
 
 	// Disconnect the player if still online
 	if s.handle != nil {
@@ -288,8 +293,12 @@ func (s *Session) clearRelationsTo(target *Session) {
 	for id := range ComponentID(MaxComponents) {
 		ptr := s.components[id]
 		if ptr != nil {
-			// Use the generic helper which handles both interface check and reflection fallback
-			clearRelationsTo(ptr, target)
+			// Get the type to create a properly typed pointer for reflection
+			t := s.manager.registry.getType(id)
+			if t != nil {
+				comp := reflect.NewAt(t, ptr).Interface()
+				clearRelationsTo(comp, target)
+			}
 		}
 	}
 }

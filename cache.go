@@ -63,10 +63,10 @@ type peerCacheEntry struct {
 }
 
 const (
-	peerStatusPending = iota
-	peerStatusReady
-	peerStatusError
-	peerStatusClosing
+	cacheStatusPending = iota
+	cacheStatusReady
+	cacheStatusError
+	cacheStatusClosing
 )
 
 // newPeerCache creates a new peer cache.
@@ -123,16 +123,16 @@ func (pc *peerCache) resolve(playerID string, componentType reflect.Type) unsafe
 	entry.refCount.Add(1)
 
 	// Wait for ready state if pending
-	if entry.status.Load() == peerStatusPending {
+	if entry.status.Load() == cacheStatusPending {
 		entry.mu.Lock()
-		if entry.status.Load() == peerStatusPending {
+		if entry.status.Load() == cacheStatusPending {
 			pc.fetchAndSubscribe(entry, componentType)
 		}
 		entry.mu.Unlock()
 	}
 
 	// Check if ready
-	if entry.status.Load() != peerStatusReady {
+	if entry.status.Load() != cacheStatusReady {
 		entry.refCount.Add(-1)
 		return nil
 	}
@@ -167,11 +167,11 @@ func (pc *peerCache) resolveMany(playerIDs []string, componentType reflect.Type)
 		entries[i] = entry
 
 		switch entry.status.Load() {
-		case peerStatusReady:
+		case cacheStatusReady:
 			if val, ok := entry.components.Load(componentType); ok {
 				results[i] = val.(unsafe.Pointer)
 			}
-		case peerStatusPending:
+		case cacheStatusPending:
 			toFetch = append(toFetch, id)
 			toFetchIndices = append(toFetchIndices, i)
 		}
@@ -215,7 +215,7 @@ func (pc *peerCache) fetchAndSubscribe(entry *peerCacheEntry, componentType refl
 
 	providers := pc.getProviders(componentType)
 	if len(providers) == 0 {
-		entry.status.Store(peerStatusError)
+		entry.status.Store(cacheStatusError)
 		return
 	}
 
@@ -242,7 +242,7 @@ func (pc *peerCache) fetchAndSubscribe(entry *peerCacheEntry, componentType refl
 				if t.Kind() == reflect.Ptr {
 					t = t.Elem()
 				}
-				entry.components.Store(t, unsafe.Pointer(reflect.ValueOf(comp).Pointer()))
+				entry.components.Store(t, ptrValueRaw(comp))
 				anySuccess.Store(true)
 			}
 
@@ -263,9 +263,9 @@ func (pc *peerCache) fetchAndSubscribe(entry *peerCacheEntry, componentType refl
 	entry.fetchedAt.Store(time.Now().UnixMilli())
 
 	if anySuccess.Load() {
-		entry.status.Store(peerStatusReady)
+		entry.status.Store(cacheStatusReady)
 	} else {
-		entry.status.Store(peerStatusError)
+		entry.status.Store(cacheStatusError)
 	}
 }
 
@@ -302,13 +302,13 @@ func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*pe
 			idx := indices[i]
 			entry := entries[idx]
 
-			if entry.status.Load() != peerStatusPending {
+			if entry.status.Load() != cacheStatusPending {
 				continue
 			}
 
 			components, ok := componentsMap[id]
 			if !ok || len(components) == 0 {
-				entry.status.Store(peerStatusError)
+				entry.status.Store(cacheStatusError)
 				continue
 			}
 
@@ -321,15 +321,15 @@ func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*pe
 				if t.Kind() == reflect.Ptr {
 					t = t.Elem()
 				}
-				entry.components.Store(t, unsafe.Pointer(reflect.ValueOf(comp).Pointer()))
+				entry.components.Store(t, ptrValueRaw(comp))
 
 				if t == componentType {
-					results[idx] = unsafe.Pointer(reflect.ValueOf(comp).Pointer())
+					results[idx] = ptrValueRaw(comp)
 				}
 			}
 
 			entry.fetchedAt.Store(now)
-			entry.status.Store(peerStatusReady)
+			entry.status.Store(cacheStatusReady)
 
 			// Subscribe for updates (async)
 			go pc.subscribeEntry(entry, p)
@@ -355,7 +355,7 @@ func (pc *peerCache) subscribeEntry(entry *peerCacheEntry, provider PlayerProvid
 // processUpdates handles incoming updates for a cache entry.
 func (e *peerCacheEntry) processUpdates() {
 	for update := range e.updateCh {
-		if e.status.Load() == peerStatusClosing {
+		if e.status.Load() == cacheStatusClosing {
 			return
 		}
 
@@ -368,7 +368,7 @@ func (e *peerCacheEntry) processUpdates() {
 			if t.Kind() == reflect.Ptr {
 				t = t.Elem()
 			}
-			e.components.Store(t, unsafe.Pointer(reflect.ValueOf(update.Data).Pointer()))
+			e.components.Store(t, ptrValueRaw(update.Data))
 		}
 
 		e.fetchedAt.Store(time.Now().UnixMilli())
@@ -382,9 +382,9 @@ func (e *peerCacheEntry) release() {
 
 // close shuts down the entry and cleans up resources.
 func (e *peerCacheEntry) close() {
-	if !e.status.CompareAndSwap(peerStatusReady, peerStatusClosing) &&
-		!e.status.CompareAndSwap(peerStatusPending, peerStatusClosing) &&
-		!e.status.CompareAndSwap(peerStatusError, peerStatusClosing) {
+	if !e.status.CompareAndSwap(cacheStatusReady, cacheStatusClosing) &&
+		!e.status.CompareAndSwap(cacheStatusPending, cacheStatusClosing) &&
+		!e.status.CompareAndSwap(cacheStatusError, cacheStatusClosing) {
 		return // Already closing
 	}
 
@@ -546,16 +546,16 @@ func (sc *sharedCache) resolve(entityID string, dataType reflect.Type) unsafe.Po
 	entry.refCount.Add(1)
 
 	// Wait for ready state if pending
-	if entry.status.Load() == peerStatusPending {
+	if entry.status.Load() == cacheStatusPending {
 		entry.mu.Lock()
-		if entry.status.Load() == peerStatusPending {
+		if entry.status.Load() == cacheStatusPending {
 			sc.fetchAndSubscribe(entry, dataType)
 		}
 		entry.mu.Unlock()
 	}
 
 	// Check if ready
-	if entry.status.Load() != peerStatusReady {
+	if entry.status.Load() != cacheStatusReady {
 		entry.refCount.Add(-1)
 		return nil
 	}
@@ -565,7 +565,7 @@ func (sc *sharedCache) resolve(entityID string, dataType reflect.Type) unsafe.Po
 	if dataPtr == nil {
 		return nil
 	}
-	return unsafe.Pointer(reflect.ValueOf(*dataPtr).Pointer())
+	return ptrValueRaw(*dataPtr)
 }
 
 // resolveMany resolves multiple entity IDs and returns their data.
@@ -575,15 +575,117 @@ func (sc *sharedCache) resolveMany(entityIDs []string, dataType reflect.Type) []
 	}
 
 	results := make([]unsafe.Pointer, len(entityIDs))
+	var toFetch []string
+	var toFetchIndices []int
+	entries := make([]*sharedCacheEntry, len(entityIDs))
 
+	// First pass: check existing entries and collect what needs fetching
 	for i, id := range entityIDs {
 		if id == "" {
 			continue
 		}
-		results[i] = sc.resolve(id, dataType)
+
+		entry := sc.getOrCreateEntry(id, dataType)
+		entry.refCount.Add(1)
+		entries[i] = entry
+
+		switch entry.status.Load() {
+		case cacheStatusReady:
+			if dataPtr := entry.data.Load(); dataPtr != nil {
+				results[i] = ptrValueRaw(*dataPtr)
+			}
+		case cacheStatusPending:
+			toFetch = append(toFetch, id)
+			toFetchIndices = append(toFetchIndices, i)
+		}
+	}
+
+	// Batch fetch pending entries
+	if len(toFetch) > 0 {
+		sc.batchFetch(toFetch, toFetchIndices, entries, dataType, results)
 	}
 
 	return results
+}
+
+// batchFetch fetches multiple entities at once.
+func (sc *sharedCache) batchFetch(entityIDs []string, indices []int, entries []*sharedCacheEntry, dataType reflect.Type, results []unsafe.Pointer) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	providers := sc.getProviders(dataType)
+	if len(providers) == 0 {
+		return
+	}
+
+	// Lock all entries we're fetching
+	for _, idx := range indices {
+		entries[idx].mu.Lock()
+	}
+	defer func() {
+		for _, idx := range indices {
+			if entries[idx] != nil {
+				entries[idx].mu.Unlock()
+			}
+		}
+	}()
+
+	// Use batch API from first provider that supports it
+	for _, p := range providers {
+		dataMap, err := p.FetchEntities(ctx, entityIDs)
+		if err != nil {
+			continue // Try next provider
+		}
+
+		now := time.Now().UnixMilli()
+
+		for i, id := range entityIDs {
+			idx := indices[i]
+			entry := entries[idx]
+
+			if entry.status.Load() != cacheStatusPending {
+				continue
+			}
+
+			data, ok := dataMap[id]
+			if !ok || data == nil {
+				entry.status.Store(cacheStatusError)
+				continue
+			}
+
+			// Store data
+			entry.data.Store(&data)
+			results[idx] = ptrValueRaw(data)
+
+			entry.fetchedAt.Store(now)
+			entry.status.Store(cacheStatusReady)
+
+			// Subscribe for updates (async)
+			go sc.subscribeEntry(entry, p)
+		}
+
+		return // Success, don't try other providers
+	}
+
+	// If we got here, all providers failed
+	for _, idx := range indices {
+		if entries[idx].status.Load() == cacheStatusPending {
+			entries[idx].status.Store(cacheStatusError)
+		}
+	}
+}
+
+// subscribeEntry sets up subscription for an entry.
+func (sc *sharedCache) subscribeEntry(entry *sharedCacheEntry, provider EntityProvider) {
+	ctx := context.Background()
+	sub, err := provider.SubscribeEntity(ctx, entry.entityID, entry.updateCh)
+	if err != nil {
+		return
+	}
+
+	entry.subscriptionMu.Lock()
+	entry.subscription = sub
+	entry.subscriptionMu.Unlock()
 }
 
 // getOrCreateEntry gets or creates a cache entry for an entity.
@@ -620,7 +722,7 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 
 	providers := sc.getProviders(dataType)
 	if len(providers) == 0 {
-		entry.status.Store(peerStatusError)
+		entry.status.Store(cacheStatusError)
 		return
 	}
 
@@ -634,7 +736,7 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 		// Store data
 		entry.data.Store(&data)
 		entry.fetchedAt.Store(time.Now().UnixMilli())
-		entry.status.Store(peerStatusReady)
+		entry.status.Store(cacheStatusReady)
 
 		// Subscribe for updates
 		go func(provider EntityProvider) {
@@ -651,20 +753,20 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 		return
 	}
 
-	entry.status.Store(peerStatusError)
+	entry.status.Store(cacheStatusError)
 }
 
 // processUpdates handles incoming updates for a cache entry.
 func (e *sharedCacheEntry) processUpdates() {
 	for update := range e.updateCh {
-		if e.status.Load() == peerStatusClosing {
+		if e.status.Load() == cacheStatusClosing {
 			return
 		}
 
 		if update == nil {
 			// Entity deleted
 			e.data.Store(nil)
-			e.status.Store(peerStatusError)
+			e.status.Store(cacheStatusError)
 		} else {
 			// Update data
 			e.data.Store(&update)
@@ -680,9 +782,9 @@ func (e *sharedCacheEntry) release() {
 
 // close shuts down the entry and cleans up resources.
 func (e *sharedCacheEntry) close() {
-	if !e.status.CompareAndSwap(peerStatusReady, peerStatusClosing) &&
-		!e.status.CompareAndSwap(peerStatusPending, peerStatusClosing) &&
-		!e.status.CompareAndSwap(peerStatusError, peerStatusClosing) {
+	if !e.status.CompareAndSwap(cacheStatusReady, cacheStatusClosing) &&
+		!e.status.CompareAndSwap(cacheStatusPending, cacheStatusClosing) &&
+		!e.status.CompareAndSwap(cacheStatusError, cacheStatusClosing) {
 		return // Already closing
 	}
 

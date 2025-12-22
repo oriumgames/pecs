@@ -558,14 +558,16 @@ if leader.Members.Has(memberSession) {
 // Get count
 count := leader.Members.Len()
 
-// Iterate all members
+// Get all non-closed sessions
 for _, memberSess := range leader.Members.All() {
-    // Process each member
+    // Process each member session
 }
 
-// Get only valid members (with required component)
-for _, memberSess := range leader.Members.AllValid() {
-    // Process valid members
+// Resolve all valid members with their components
+for _, resolved := range leader.Members.Resolve() {
+    sess := resolved.Session     // *Session
+    member := resolved.Component // *PartyMember
+    // Process member data
 }
 
 // Clear all
@@ -611,7 +613,7 @@ func (l *PartyBuffLoop) Run(tx *world.Tx) {
 
 ```go
 // Resolve relation to get session and component
-if sess, comp, ok := pecs.Resolve(member.Leader); ok {
+if sess, comp, ok := member.Leader.Resolve(); ok {
     fmt.Println("Leader name:", comp.Name)
 }
 ```
@@ -669,6 +671,11 @@ if friends.BestFriend.IsSet() {
 
 // Clear
 friends.BestFriend.Clear()
+
+// Manual resolution (useful in commands/forms)
+if profile, ok := friends.BestFriend.Resolve(sess.Manager()); ok {
+    fmt.Println("Best friend:", profile.Username)
+}
 ```
 
 **Using PeerSet:**
@@ -691,6 +698,12 @@ count := friends.Friends.Len()
 
 // Clear all
 friends.Friends.Clear()
+
+// Manual resolution (useful in commands/forms)
+profiles := friends.Friends.Resolve(sess.Manager())
+for _, profile := range profiles {
+    fmt.Println("Friend:", profile.Username)
+}
 ```
 
 **Resolving Peer Data in Systems:**
@@ -756,6 +769,11 @@ pecs.Add(sess, mmData)
 // Same API as Peer
 id := mmData.CurrentParty.ID()
 mmData.CurrentParty.Clear()
+
+// Manual resolution (useful in commands/forms)
+if party, ok := mmData.CurrentParty.Resolve(sess.Manager()); ok {
+    fmt.Println("Party:", party.ID, "Members:", len(party.Members))
+}
 ```
 
 **Using SharedSet:**
@@ -768,6 +786,12 @@ type GuildData struct {
 // Same API as PeerSet
 guildData.ActiveWars.Set([]string{"war-1", "war-2"})
 guildData.ActiveWars.Add("war-3")
+
+// Manual resolution
+wars := guildData.ActiveWars.Resolve(sess.Manager())
+for _, war := range wars {
+    fmt.Println("War:", war.ID)
+}
 ```
 
 **Resolving Shared Data in Systems:**
@@ -1293,7 +1317,7 @@ relation.Set(target *Session)
 relation.Get() *Session
 relation.Clear()
 relation.Valid() bool
-relation.Target() *Session
+relation.Resolve() (sess *Session, comp *T, ok bool)
 
 // RelationSet[T]
 set.Add(target *Session)
@@ -1302,11 +1326,7 @@ set.Has(target *Session) bool
 set.Clear()
 set.Len() int
 set.All() []*Session
-set.AllValid() []*Session
-set.Iter() <-chan *Session
-
-// Resolution
-pecs.Resolve[T any](r Relation[T]) (sess *Session, comp *T, ok bool)
+set.Resolve() []Resolved[T]
 ```
 
 ### Peer & Shared
@@ -1317,6 +1337,7 @@ peer.Set(playerID string)
 peer.ID() string
 peer.IsSet() bool
 peer.Clear()
+peer.Resolve(m *Manager) (*T, bool)
 
 // PeerSet[T]
 peerSet.Set(playerIDs []string)
@@ -1325,12 +1346,14 @@ peerSet.Remove(playerID string)
 peerSet.IDs() []string
 peerSet.Len() int
 peerSet.Clear()
+peerSet.Resolve(m *Manager) []*T
 
 // Shared[T]
 shared.Set(entityID string)
 shared.ID() string
 shared.IsSet() bool
 shared.Clear()
+shared.Resolve(m *Manager) (*T, bool)
 
 // SharedSet[T]
 sharedSet.Set(entityIDs []string)
@@ -1339,6 +1362,7 @@ sharedSet.Remove(entityID string)
 sharedSet.IDs() []string
 sharedSet.Len() int
 sharedSet.Clear()
+sharedSet.Resolve(m *Manager) []*T
 ```
 
 ### Helpers
@@ -1346,6 +1370,7 @@ sharedSet.Clear()
 ```go
 pecs.Command(src cmd.Source) (*player.Player, *Session)
 pecs.Form(sub form.Submitter) (*player.Player, *Session)
+pecs.Item(user item.User) (*player.Player, *Session)
 pecs.MustCommand(src cmd.Source) (*player.Player, *Session)
 pecs.MustForm(sub form.Submitter) (*player.Player, *Session)
 pecs.NewHandler(sess *Session, p *player.Player) Handler

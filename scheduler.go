@@ -290,14 +290,18 @@ func (s *Scheduler) executeLoopForSessions(tx *world.Tx, sessions []*Session, lo
 		loop.meta.Pool.Put(system)
 	}()
 
+	// Reusable single-element slice to avoid allocation per session
+	sessionSlice := make([]*Session, 1)
+
 	for _, sess := range sessions {
 		// Check bitmask
 		if !sess.canRun(loop.meta) {
 			continue
 		}
 
-		// Inject dependencies
-		if !injectSystem(system, []*Session{sess}, loop.meta, loop.bundle, s.manager) {
+		// Inject dependencies (reuse slice to avoid allocation)
+		sessionSlice[0] = sess
+		if !injectSystem(system, sessionSlice, loop.meta, loop.bundle, s.manager) {
 			// Zero before next iteration to prevent stale data
 			zeroSystem(system, loop.meta)
 			continue

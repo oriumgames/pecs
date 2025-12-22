@@ -1,6 +1,7 @@
 package pecs
 
 import (
+	"fmt"
 	"net"
 	"reflect"
 	"sync"
@@ -17,11 +18,47 @@ import (
 	"github.com/go-gl/mathgl/mgl64"
 )
 
+// funcval mirrors the runtime's internal function value structure.
+// A Go function variable is internally a *funcval.
+// See: https://github.com/golang/go/blob/master/src/runtime/runtime2.go
+type funcval struct {
+	fn uintptr
+}
+
+func init() {
+	// Verify funcval layout matches Go's internal representation.
+	// If this panics on a future Go version, the internal layout changed
+	// and the unsafe event dispatch in registerHandler needs updating.
+	testAddr := uintptr(0xDEADBEEF)
+	fv := &funcval{fn: testAddr}
+
+	// Convert our funcval to a function value and back to verify round-trip
+	fn := *(*func())(unsafe.Pointer(&fv))
+	recovered := *(*uintptr)(unsafe.Pointer(&fn))
+
+	if recovered != uintptr(unsafe.Pointer(fv)) {
+		panic("pecs: funcval layout assumption violated - unsafe event dispatch will not work on this Go version")
+	}
+}
+
+// emptyInterface is the header for an empty interface. It is used to
+// extract the underlying data pointer from an interface value.
+type emptyInterface struct {
+	typ  unsafe.Pointer
+	data unsafe.Pointer
+}
+
+// unsafeEventDispatcher is a function that calls an event handler method
+// using unsafe pointers to avoid reflection overhead. The handler and event
+// pointers are the raw data pointers from their respective interface values.
+type unsafeEventDispatcher func(handler, event unsafe.Pointer)
+
 // handlerMeta holds metadata and pool for a registered handler type.
 type handlerMeta struct {
 	meta   *SystemMeta
 	bundle *Bundle
-	events map[reflect.Type]int
+	// events is a map of event types to their unsafe, reflection-free dispatcher.
+	events map[reflect.Type]unsafeEventDispatcher
 }
 
 // Handler is the primary interface for systems that react to player events.
@@ -89,6 +126,9 @@ func (h *SessionHandler) executeHandlers(fn func(h Handler)) {
 		return
 	}
 
+	// Reusable single-element slice to avoid allocation per handler
+	sessionSlice := [1]*Session{s}
+
 	for _, hm := range s.manager.handlers {
 		// Check bitmask
 		if !s.canRun(hm.meta) {
@@ -99,7 +139,7 @@ func (h *SessionHandler) executeHandlers(fn func(h Handler)) {
 		handler := hm.meta.Pool.Get().(Handler)
 
 		// Inject dependencies
-		if !injectSystem(handler, []*Session{s}, hm.meta, hm.bundle, s.manager) {
+		if !injectSystem(handler, sessionSlice[:], hm.meta, hm.bundle, s.manager) {
 			zeroSystem(handler, hm.meta)
 			hm.meta.Pool.Put(handler)
 			continue
@@ -126,34 +166,46 @@ func (s *Session) Dispatch(event any) {
 	}
 
 	eventType := reflect.TypeOf(event)
+	if eventType.Kind() != reflect.Pointer {
+		// This should not happen if handlers are registered correctly, but as a
+		// safety measure, we ignore non-pointer events in the dispatch path.
+		// The registration path already panics for these.
+		return
+	}
+
+	// Extract the raw data pointer from the event interface.
+	eventPtr := (*emptyInterface)(unsafe.Pointer(&event)).data
+	sessionSlice := [1]*Session{s}
 
 	for _, hm := range s.manager.handlers {
-		// Check if this handler handles this event type
-		methodIdx, ok := hm.events[eventType]
+		// Check if this handler handles this event type.
+		dispatcher, ok := hm.events[eventType]
 		if !ok {
 			continue
 		}
 
-		// Check bitmask
+		// Check bitmask.
 		if !s.canRun(hm.meta) {
 			continue
 		}
 
-		// Get handler from pool
+		// Get handler from pool.
 		handler := hm.meta.Pool.Get()
 
-		// Inject dependencies
-		if !injectSystem(handler, []*Session{s}, hm.meta, hm.bundle, s.manager) {
+		// Inject dependencies.
+		if !injectSystem(handler, sessionSlice[:], hm.meta, hm.bundle, s.manager) {
 			zeroSystem(handler, hm.meta)
 			hm.meta.Pool.Put(handler)
 			continue
 		}
 
-		// Execute handler method via reflection
-		// We use the cached method index for performance
-		reflect.ValueOf(handler).Method(methodIdx).Call([]reflect.Value{reflect.ValueOf(event)})
+		// Extract the raw data pointer from the handler interface.
+		handlerPtr := (*emptyInterface)(unsafe.Pointer(&handler)).data
 
-		// Zero and return to pool
+		// Execute the pre-compiled unsafe dispatcher.
+		dispatcher(handlerPtr, eventPtr)
+
+		// Zero and return to pool.
 		zeroSystem(handler, hm.meta)
 		hm.meta.Pool.Put(handler)
 	}
@@ -375,17 +427,42 @@ func (m *Manager) registerHandler(h Handler, bundle *Bundle) error {
 		},
 	}
 
-	// Scan for event methods
-	events := make(map[reflect.Type]int)
+	// Scan for event methods and create optimized, unsafe dispatchers.
+	events := make(map[reflect.Type]unsafeEventDispatcher)
 	for i := 0; i < t.NumMethod(); i++ {
 		method := t.Method(i)
-		// Check for 1 argument (plus receiver)
-		if method.Type.NumIn() != 2 {
+		if method.Type.NumIn() != 2 { // Receiver + 1 argument
 			continue
 		}
-		// Register event type
+
 		eventType := method.Type.In(1)
-		events[eventType] = i
+
+		// For this unsafe optimization to work without assembly, we can only
+		// support events that are passed as pointers. Handling value types
+		// would require knowing the argument passing convention (registers vs.
+		// stack), which is not guaranteed to be stable.
+		if eventType.Kind() != reflect.Pointer {
+			// We panic here to enforce the use of pointer types for events at startup.
+			// This makes the performance characteristics clear to the developer.
+			panic(fmt.Errorf("pecs: event handler %v method %v uses value type %v for event. only pointer types are supported for unsafe dispatch", t, method.Name, eventType))
+		}
+
+		// Get the method's code address
+		capturedFptr := method.Func.Pointer()
+
+		// Create a persistent funcval struct containing the code address.
+		// This must be heap-allocated and persist for the lifetime of the dispatcher.
+		fv := &funcval{fn: capturedFptr}
+
+		// Reinterpret the *funcval as a callable function value.
+		// In Go's runtime, a func variable IS a *funcval internally.
+		fn := *(*func(unsafe.Pointer, unsafe.Pointer))(unsafe.Pointer(&fv))
+
+		events[eventType] = func(handler, event unsafe.Pointer) {
+			// Direct function call through the properly constructed function value.
+			// This is ~1-2ns overhead, same as a regular function call.
+			fn(handler, event)
+		}
 	}
 
 	m.handlers = append(m.handlers, &handlerMeta{

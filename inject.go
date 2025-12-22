@@ -1,10 +1,34 @@
 package pecs
 
 import (
-	"reflect"
-	"sync"
 	"unsafe"
 )
+
+// efaceHeader is the internal representation of an interface{}.
+// This matches the runtime's eface struct.
+type efaceHeader struct {
+	typ  unsafe.Pointer
+	data unsafe.Pointer
+}
+
+// sliceHeader is the internal representation of a slice.
+type sliceHeader struct {
+	data unsafe.Pointer
+	len  int
+	cap  int
+}
+
+// ptrValue extracts the pointer from an interface containing a pointer.
+// This is faster than reflect.ValueOf(v).Pointer().
+func ptrValue(v any) uintptr {
+	return uintptr((*efaceHeader)(unsafe.Pointer(&v)).data)
+}
+
+// ptrValueRaw extracts the raw pointer from an interface containing a pointer.
+// This is faster than unsafe.Pointer(reflect.ValueOf(v).Pointer()).
+func ptrValueRaw(v any) unsafe.Pointer {
+	return (*efaceHeader)(unsafe.Pointer(&v)).data
+}
 
 // injectSystem injects dependencies into a system instance.
 // The system must have been allocated and sessions/resources must be valid.
@@ -13,7 +37,7 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 		return false
 	}
 
-	systemPtr := reflect.ValueOf(system).Pointer()
+	systemPtr := ptrValue(system)
 	currentSession := sessions[0]
 	currentWindowIndex := 0
 
@@ -70,7 +94,7 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 			// Unsafe access to Relation[T].target
 			// We trust RelationDataOffset from meta analysis to point to the Relation struct
 			// and we know 'target *Session' is the first field (offset 0).
-			relPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.RelationDataOffset)
+			relPtr := unsafe.Add(lastComponentPtr, field.RelationDataOffset)
 			targetSession := *(*(*Session))(relPtr)
 
 			if targetSession == nil || targetSession.closed.Load() {
@@ -100,20 +124,17 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 			// Find the relation set in the last component
 			if lastComponentPtr == nil {
 				// Set empty slice
-				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				clearSlice(systemPtr, field.Offset)
 				continue
 			}
 
 			// Unsafe access to RelationSet[T]
-			relSetPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.RelationDataOffset)
+			relSetPtr := unsafe.Add(lastComponentPtr, field.RelationDataOffset)
 			targetSessions := getRelationSetTargets(relSetPtr)
 
-			// Get existing slice for capacity reuse
-			slicePtr := unsafe.Pointer(systemPtr + field.Offset)
-			existingSlice := reflect.NewAt(reflect.SliceOf(reflect.PointerTo(field.ComponentType)), slicePtr).Elem()
-
-			slice := makeComponentSlice(targetSessions, field.ComponentID, field.ComponentType, existingSlice)
-			setSliceField(systemPtr, field.Offset, slice)
+			// Collect component pointers and set the slice
+			ptrs := collectComponentPtrs(targetSessions, field.ComponentID, nil)
+			setSliceFromPtrs(systemPtr, field.Offset, ptrs)
 
 		case KindResource:
 			if bundle == nil {
@@ -142,7 +163,7 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 		case KindPayload:
 			// Payload fields must be zeroed to prevent leakage between sessions
 			// when reusing the same system instance (e.g. in scheduler loops)
-			zeroPayloadField(systemPtr, field)
+			zeroField(systemPtr, field.Offset, field.Size)
 
 		case KindPeer:
 			// Resolve Peer[T] - single remote player's component
@@ -155,7 +176,7 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 			}
 
 			// Get player ID from Peer[T] in source component
-			peerPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.PeerSourceOffset)
+			peerPtr := unsafe.Add(lastComponentPtr, field.PeerSourceOffset)
 			playerID := getPeerID(peerPtr)
 
 			if playerID == "" {
@@ -176,27 +197,25 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 		case KindPeerSlice:
 			// Resolve PeerSet[T] - multiple remote players' components
 			if lastComponentPtr == nil {
-				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				clearSlice(systemPtr, field.Offset)
 				continue
 			}
 
 			// Get player IDs from PeerSet[T] in source component
-			peerSetPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.PeerSourceOffset)
+			peerSetPtr := unsafe.Add(lastComponentPtr, field.PeerSourceOffset)
 			playerIDs := getPeerSetIDs(peerSetPtr)
 
 			if len(playerIDs) == 0 {
-				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				clearSlice(systemPtr, field.Offset)
 				continue
 			}
 
 			// Batch resolve via manager
 			compPtrs := manager.ResolvePeers(playerIDs, field.ComponentType)
 
-			// Build slice from results
-			slicePtr := unsafe.Pointer(systemPtr + field.Offset)
-			existingSlice := reflect.NewAt(reflect.SliceOf(reflect.PointerTo(field.ComponentType)), slicePtr).Elem()
-			slice := makePtrSliceFromUnsafe(compPtrs, field.ComponentType, existingSlice)
-			setSliceField(systemPtr, field.Offset, slice)
+			// Filter nil entries and set the slice
+			ptrs := collectNonNilPtrs(compPtrs, nil)
+			setSliceFromPtrs(systemPtr, field.Offset, ptrs)
 
 		case KindShared:
 			// Resolve Shared[T] - single shared entity's data
@@ -209,7 +228,7 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 			}
 
 			// Get entity ID from Shared[T] in source component
-			sharedPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.SharedSourceOffset)
+			sharedPtr := unsafe.Add(lastComponentPtr, field.SharedSourceOffset)
 			entityID := getSharedID(sharedPtr)
 
 			if entityID == "" {
@@ -230,27 +249,25 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 		case KindSharedSlice:
 			// Resolve SharedSet[T] - multiple shared entities' data
 			if lastComponentPtr == nil {
-				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				clearSlice(systemPtr, field.Offset)
 				continue
 			}
 
 			// Get entity IDs from SharedSet[T] in source component
-			sharedSetPtr := unsafe.Pointer(uintptr(lastComponentPtr) + field.SharedSourceOffset)
+			sharedSetPtr := unsafe.Add(lastComponentPtr, field.SharedSourceOffset)
 			entityIDs := getSharedSetIDs(sharedSetPtr)
 
 			if len(entityIDs) == 0 {
-				setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+				clearSlice(systemPtr, field.Offset)
 				continue
 			}
 
 			// Batch resolve via manager
 			dataPtrs := manager.ResolveSharedMany(entityIDs, field.ComponentType)
 
-			// Build slice from results
-			slicePtr := unsafe.Pointer(systemPtr + field.Offset)
-			existingSlice := reflect.NewAt(reflect.SliceOf(reflect.PointerTo(field.ComponentType)), slicePtr).Elem()
-			slice := makePtrSliceFromUnsafe(dataPtrs, field.ComponentType, existingSlice)
-			setSliceField(systemPtr, field.Offset, slice)
+			// Filter nil entries and set the slice
+			ptrs := collectNonNilPtrs(dataPtrs, nil)
+			setSliceFromPtrs(systemPtr, field.Offset, ptrs)
 		}
 	}
 
@@ -259,7 +276,7 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 
 // zeroSystem zeros all pointer fields in a system for pool reuse.
 func zeroSystem(system any, meta *SystemMeta) {
-	systemPtr := reflect.ValueOf(system).Pointer()
+	systemPtr := ptrValue(system)
 
 	for i := range meta.Fields {
 		field := &meta.Fields[i]
@@ -269,12 +286,12 @@ func zeroSystem(system any, meta *SystemMeta) {
 			setFieldPtr(systemPtr, field.Offset, nil)
 
 		case KindRelationSlice, KindPeerSlice, KindSharedSlice:
-			// Zero the slice header
-			setEmptySlice(systemPtr, field.Offset, field.ComponentType)
+			// Zero the slice length (keep capacity)
+			clearSlice(systemPtr, field.Offset)
 
 		case KindPayload:
-			// Zero payload fields based on type
-			zeroPayloadField(systemPtr, field)
+			// Zero payload fields
+			zeroField(systemPtr, field.Offset, field.Size)
 		}
 	}
 }
@@ -284,67 +301,61 @@ func setFieldPtr(base uintptr, offset uintptr, value unsafe.Pointer) {
 	*(*unsafe.Pointer)(unsafe.Pointer(base + offset)) = value
 }
 
-// setEmptySlice sets an empty slice at the given offset while preserving capacity.
-func setEmptySlice(base uintptr, offset uintptr, elemType reflect.Type) {
-	// Get pointer to the slice
-	slicePtr := unsafe.Pointer(base + offset)
-
-	// Use reflect to safely set length to 0 while preserving capacity
-	sliceType := reflect.SliceOf(reflect.PointerTo(elemType))
-	slice := reflect.NewAt(sliceType, slicePtr).Elem()
-	slice.SetLen(0)
+// clearSlice sets a slice's length to 0 while preserving capacity.
+// This is faster than using reflection.
+func clearSlice(base uintptr, offset uintptr) {
+	header := (*sliceHeader)(unsafe.Pointer(base + offset))
+	header.len = 0
 }
 
-// setSliceField sets a slice field at the given offset.
-func setSliceField(base uintptr, offset uintptr, slice reflect.Value) {
-	dst := reflect.NewAt(slice.Type(), unsafe.Pointer(base+offset)).Elem()
-	dst.Set(slice)
+// zeroField zeros a field of the given size at the given offset.
+func zeroField(base uintptr, offset uintptr, size uintptr) {
+	if size == 0 {
+		return
+	}
+	ptr := unsafe.Pointer(base + offset)
+	// Use a byte slice view to zero the memory
+	bytes := unsafe.Slice((*byte)(ptr), size)
+	clear(bytes)
 }
 
-// zeroPayloadField zeros a payload field based on its type.
-func zeroPayloadField(base uintptr, field *FieldMeta) {
-	if field.ComponentType == nil {
+// ptrSlice is the underlying representation of any []*T slice.
+// All pointer slices have the same memory layout regardless of T.
+type ptrSlice struct {
+	data unsafe.Pointer
+	len  int
+	cap  int
+}
+
+// setSliceFromPtrs sets a pointer slice field from collected pointers.
+// This works because all []*T slices have the same underlying layout.
+func setSliceFromPtrs(base uintptr, offset uintptr, ptrs []unsafe.Pointer) {
+	dst := (*ptrSlice)(unsafe.Pointer(base + offset))
+
+	if len(ptrs) == 0 {
+		dst.len = 0
 		return
 	}
 
-	v := reflect.NewAt(field.ComponentType, unsafe.Pointer(base+field.Offset)).Elem()
-	v.Set(reflect.Zero(field.ComponentType))
-}
-
-// relationSetLayout matches the memory layout of RelationSet[T].
-type relationSetLayout struct {
-	mu      sync.RWMutex
-	targets map[*Session]struct{}
-}
-
-// getRelationSetTargetsUnsafe gets all target sessions from a RelationSet[T] pointer.
-func getRelationSetTargets(ptr unsafe.Pointer) []*Session {
-	layout := (*relationSetLayout)(ptr)
-	layout.mu.RLock()
-	defer layout.mu.RUnlock()
-
-	if layout.targets == nil {
-		return nil
+	// If we have enough capacity, reuse the existing backing array
+	if dst.cap >= len(ptrs) {
+		// Copy pointers into existing backing array
+		existing := unsafe.Slice((*unsafe.Pointer)(dst.data), dst.cap)
+		copy(existing, ptrs)
+		dst.len = len(ptrs)
+		return
 	}
 
-	result := make([]*Session, 0, len(layout.targets))
-	for s := range layout.targets {
-		if !s.closed.Load() {
-			result = append(result, s)
-		}
-	}
-	return result
+	// Need to allocate new backing array - use the slice we built
+	dst.data = unsafe.Pointer(&ptrs[0])
+	dst.len = len(ptrs)
+	dst.cap = len(ptrs)
 }
 
-// makeComponentSlice creates a slice of component pointers from sessions.
-func makeComponentSlice(sessions []*Session, compID ComponentID, compType reflect.Type, reuse reflect.Value) reflect.Value {
-	slice := reuse
-	slice.SetLen(0)
-
-	if slice.Cap() < len(sessions) {
-		sliceType := reflect.SliceOf(reflect.PointerTo(compType))
-		slice = reflect.MakeSlice(sliceType, 0, len(sessions))
-	}
+// collectComponentPtrs collects component pointers from sessions into a reusable buffer.
+func collectComponentPtrs(sessions []*Session, compID ComponentID, buf []unsafe.Pointer) []unsafe.Pointer {
+	// Reuse buffer if possible
+	result := buf[:0]
 
 	for _, s := range sessions {
 		s.mu.RLock()
@@ -352,82 +363,22 @@ func makeComponentSlice(sessions []*Session, compID ComponentID, compType reflec
 		s.mu.RUnlock()
 
 		if ptr != nil {
-			compValue := reflect.NewAt(compType, ptr)
-			slice = reflect.Append(slice, compValue)
+			result = append(result, ptr)
 		}
 	}
 
-	return slice
+	return result
 }
 
-// makePtrSliceFromUnsafe creates a slice of pointers from unsafe.Pointer slice.
-// Filters out nil entries.
-func makePtrSliceFromUnsafe(ptrs []unsafe.Pointer, elemType reflect.Type, reuse reflect.Value) reflect.Value {
-	slice := reuse
-	slice.SetLen(0)
-
-	// Count non-nil entries for capacity
-	nonNilCount := 0
-	for _, ptr := range ptrs {
-		if ptr != nil {
-			nonNilCount++
-		}
-	}
-
-	if slice.Cap() < nonNilCount {
-		sliceType := reflect.SliceOf(reflect.PointerTo(elemType))
-		slice = reflect.MakeSlice(sliceType, 0, nonNilCount)
-	}
+// collectNonNilPtrs filters nil entries from a pointer slice.
+func collectNonNilPtrs(ptrs []unsafe.Pointer, buf []unsafe.Pointer) []unsafe.Pointer {
+	result := buf[:0]
 
 	for _, ptr := range ptrs {
 		if ptr != nil {
-			compValue := reflect.NewAt(elemType, ptr)
-			slice = reflect.Append(slice, compValue)
+			result = append(result, ptr)
 		}
 	}
 
-	return slice
-}
-
-// clearRelationsReflect clears all relations to a target session in a component.
-func clearRelationsReflect(componentPtr any, target *Session) {
-	val := reflect.ValueOf(componentPtr)
-	if val.Kind() == reflect.Ptr {
-		val = val.Elem()
-	}
-	if val.Kind() != reflect.Struct {
-		return
-	}
-
-	typ := val.Type()
-	for i := 0; i < val.NumField(); i++ {
-		field := val.Field(i)
-		fieldType := typ.Field(i).Type
-
-		if !field.CanInterface() {
-			continue
-		}
-
-		// Check for Relation[T]
-		if fieldType.Kind() == reflect.Struct {
-			typeName := fieldType.String()
-			if len(typeName) > 14 && typeName[:14] == "pecs.Relation[" {
-				targetField := field.FieldByName("target")
-				if targetField.IsValid() && targetField.CanSet() {
-					if targetField.Interface() == target {
-						targetField.Set(reflect.Zero(targetField.Type()))
-					}
-				}
-			}
-			// Check for RelationSet[T]
-			if len(typeName) > 17 && typeName[:17] == "pecs.RelationSet[" {
-				targetsField := field.FieldByName("targets")
-				if targetsField.IsValid() && targetsField.CanInterface() {
-					if targets, ok := targetsField.Interface().(map[*Session]struct{}); ok {
-						delete(targets, target)
-					}
-				}
-			}
-		}
-	}
+	return result
 }

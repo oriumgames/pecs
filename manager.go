@@ -92,7 +92,7 @@ func (m *Manager) addInjection(inj any) {
 	}
 
 	m.injectionsMu.Lock()
-	m.injections[t] = unsafe.Pointer(reflect.ValueOf(inj).Pointer())
+	m.injections[t] = ptrValueRaw(inj)
 	m.injectionsMu.Unlock()
 }
 
@@ -113,7 +113,7 @@ func ManagerInjection[T any](m *Manager) *T {
 	if m == nil {
 		return nil
 	}
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	ptr := m.getInjection(t)
 	if ptr == nil {
 		return nil

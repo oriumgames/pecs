@@ -2,6 +2,7 @@ package pecs
 
 import (
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"unsafe"
 )
@@ -24,6 +25,15 @@ import (
 //	    Session *Session
 //	    MMData  *MatchmakingData
 //	    Party   *PartyInfo `pecs:"shared"` // Resolved from MMData.CurrentParty
+//	}
+//
+//	// In a command - manual resolution
+//	func (c PartyInfoCommand) Run(src cmd.Source, out *cmd.Output, tx *world.Tx) {
+//	    p, sess := pecs.MustCommand(src)
+//	    mmData := pecs.Get[MatchmakingData](sess)
+//	    if party, ok := mmData.CurrentParty.Resolve(sess.Manager()); ok {
+//	        out.Printf("Party: %s (%d members)", party.Name, len(party.Members))
+//	    }
 //	}
 type Shared[T any] struct {
 	id string
@@ -49,9 +59,25 @@ func (s *Shared[T]) IsSet() bool {
 	return s.id != ""
 }
 
+// Resolve fetches the shared entity's data.
+// Returns (nil, false) if the entity is not set, doesn't exist,
+// or the data is not available.
+func (s *Shared[T]) Resolve(m *Manager) (*T, bool) {
+	if m == nil || s.id == "" {
+		return nil, false
+	}
+
+	t := reflect.TypeFor[T]()
+	ptr := m.ResolveShared(s.id, t)
+	if ptr == nil {
+		return nil, false
+	}
+	return (*T)(ptr), true
+}
+
 // TargetType returns the reflect.Type of the data type T.
 func (s *Shared[T]) TargetType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
+	return reflect.TypeFor[T]()
 }
 
 // sharedTypeInfo is used for type detection during system analysis.
@@ -120,10 +146,8 @@ func (ss *SharedSet[T]) Add(entityID string) {
 		var newIDs []string
 		if old != nil {
 			// Check for duplicate
-			for _, id := range *old {
-				if id == entityID {
-					return
-				}
+			if slices.Contains(*old, entityID) {
+				return
 			}
 			newIDs = make([]string, len(*old)+1)
 			copy(newIDs, *old)
@@ -191,9 +215,34 @@ func (ss *SharedSet[T]) Len() int {
 	return len(*ptr)
 }
 
+// Resolve fetches all shared entities' data.
+// Returns only successfully resolved data (nil entries are filtered out).
+func (ss *SharedSet[T]) Resolve(m *Manager) []*T {
+	if m == nil {
+		return nil
+	}
+
+	ids := ss.IDs()
+	if len(ids) == 0 {
+		return nil
+	}
+
+	t := reflect.TypeFor[T]()
+	ptrs := m.ResolveSharedMany(ids, t)
+
+	// Filter nil results
+	results := make([]*T, 0, len(ptrs))
+	for _, ptr := range ptrs {
+		if ptr != nil {
+			results = append(results, (*T)(ptr))
+		}
+	}
+	return results
+}
+
 // TargetType returns the reflect.Type of the data type T.
 func (ss *SharedSet[T]) TargetType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem()
+	return reflect.TypeFor[T]()
 }
 
 type sharedSetTypeInfo interface {

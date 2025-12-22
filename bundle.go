@@ -97,7 +97,7 @@ func (b *Bundle) Resource(res any) *Bundle {
 	}
 
 	b.resourcesMu.Lock()
-	b.resources[t] = unsafe.Pointer(reflect.ValueOf(res).Pointer())
+	b.resources[t] = ptrValueRaw(res)
 	b.resourcesMu.Unlock()
 
 	return b

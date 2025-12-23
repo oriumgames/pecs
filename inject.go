@@ -4,7 +4,7 @@ import (
 	"unsafe"
 )
 
-// efaceHeader is the internal representation of an interface{}.
+// efaceHeader is the internal representation of an any.
 // This matches the runtime's eface struct.
 type efaceHeader struct {
 	typ  unsafe.Pointer

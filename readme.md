@@ -10,6 +10,7 @@ PECS is a game architecture framework designed for [Dragonfly](https://github.co
 - [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
   - [Sessions](#sessions)
+  - [Fake Players & NPCs](#fake-players--npcs)
   - [Components](#components)
   - [Systems](#systems)
   - [Handlers](#handlers)
@@ -135,7 +136,7 @@ sess := mngr.NewSession(p)
 sess := mngr.GetSession(p)
 sess := mngr.GetSessionByUUID(uuid)
 sess := mngr.GetSessionByName("PlayerName")
-sess := mngr.GetSessionByXUID(xuid)
+sess := mngr.GetSessionByID(xuid)
 
 // Get persistent identifier (XUID) - used for cross-server references
 id := sess.ID()
@@ -160,6 +161,84 @@ world := sess.World()
 
 // Access manager from session
 m := sess.Manager()
+```
+
+**Session Type Helpers:**
+
+```go
+// Check if session is a fake player (testing bot)
+if sess.IsFake() {
+    // Has FakeMarker component
+}
+
+// Check if session is an NPC entity
+if sess.IsEntity() {
+    // Has EntityMarker component
+}
+
+// Check if session is any kind of actor (fake or entity)
+if sess.IsActor() {
+    // Not a real player (no network session)
+}
+```
+
+### Fake Players & NPCs
+
+PECS supports spawning fake players (bots) and NPC entities that participate in the component system just like real players.
+
+**Types:**
+
+| Type | Marker | Federated ID | Use Case |
+|------|--------|--------------|----------|
+| Real Player | None | XUID | Human players |
+| Fake Player | `FakeMarker` | Custom ID | Testing bots, lobby filling |
+| NPC Entity | `EntityMarker` | None | AI entities, shopkeepers |
+
+**Spawning Bots:**
+
+```go
+// Configuration for spawning
+cfg := pecs.ActorConfig{
+    Name:     "TestBot",
+    Skin:     someSkin,
+    Position: mgl64.Vec3{0, 64, 0},
+    Yaw:      0,
+    Pitch:    0,
+}
+
+// Spawn a fake player (can participate in Peer[T] lookups with fakeID)
+sess := mngr.SpawnFake(tx, cfg, "fake-player-123")
+
+// Spawn an NPC entity (local only, no federation)
+sess := mngr.SpawnEntity(tx, cfg)
+
+// Add components as usual
+pecs.Add(sess, &Health{Current: 100, Max: 100})
+```
+
+**Federated ID Resolution:**
+
+```go
+// Real players: ID() returns XUID
+// Fake players: ID() returns FakeMarker.ID
+// Entities: ID() returns "" (no federated ID)
+id := sess.ID()
+
+// Unified lookup (works for real and fake players)
+sess := mngr.GetSessionByID(id)
+```
+
+**Marker Components:**
+
+```go
+// FakeMarker and EntityMarker are empty struct markers
+type FakeMarker struct{}
+type EntityMarker struct{}
+
+// Check with helper methods
+if sess.IsFake() {
+    fmt.Println("Fake player ID:", sess.ID())
+}
 ```
 
 ### Components
@@ -843,19 +922,19 @@ func (h *PartyDisplayHandler) HandleJoin(p *player.Player) {
 
 ### Providers
 
-Providers fetch and sync data from your backend services. Implement `PlayerProvider` for peer data and `EntityProvider` for shared data.
+Providers fetch and sync data from your backend services. Implement `PeerProvider` for peer data and `SharedProvider` for shared data.
 
-**PlayerProvider:**
+**PeerProvider:**
 
 ```go
-When a player joins, PECS automatically queries all registered `PlayerProvider`s. If data is returned,
+When a player joins, PECS automatically queries all registered `PeerProvider`s. If data is returned,
 components are added to the session and kept in sync via subscriptions. This removes the need for
 manual data fetching handlers.
 
 You can mark a provider as required using `pecs.WithRequired(true)`. If a required provider fails to
 fetch data during session creation, `NewSession` will return an error.
 
-type PlayerProvider interface {
+type PeerProvider interface {
     // Unique name for logging
     Name() string
     
@@ -873,7 +952,7 @@ type PlayerProvider interface {
 }
 ```
 
-**Example PlayerProvider Implementation:**
+**Example PeerProvider Implementation:**
 
 ```go
 type StatusProvider struct {
@@ -946,10 +1025,10 @@ func (p *StatusProvider) SubscribePlayer(ctx context.Context, playerID string, u
 }
 ```
 
-**EntityProvider:**
+**SharedProvider:**
 
 ```go
-type EntityProvider interface {
+type SharedProvider interface {
     Name() string
     EntityComponents() []reflect.Type
     FetchEntity(ctx context.Context, entityID string) (any, error)
@@ -962,15 +1041,15 @@ type EntityProvider interface {
 ```go
 mngr := pecs.NewBuilder().
     Bundle(gameBundle).
-    PlayerProvider(&StatusProvider{...}).
-    PlayerProvider(&ProfileProvider{...}).
-    EntityProvider(&PartyProvider{...}).
-    EntityProvider(&MatchProvider{...}).
+    PeerProvider(&StatusProvider{...}).
+    PeerProvider(&ProfileProvider{...}).
+    SharedProvider(&PartyProvider{...}).
+    SharedProvider(&MatchProvider{...}).
     Init()
 
 // Or with options
 mngr := pecs.NewBuilder().
-    PlayerProvider(&StatusProvider{...}, 
+    PeerProvider(&StatusProvider{...}, 
         pecs.WithFetchTimeout(2000),      // 2 second timeout
         pecs.WithGracePeriod(60000),      // 60 second cache grace period
         pecs.WithStaleTimeout(300000),    // 5 minute stale timeout
@@ -1042,7 +1121,7 @@ func (h *NotificationHandler) HandleLevelUp(e LevelUpEvent) {
 
 ```go
 // To single session
-sess.Dispatch(DamageEvent{Amount: 5, Source: src})
+sess.Dispatch(&DamageEvent{Amount: 5, Source: src})
 
 // To all sessions
 mngr.Broadcast(LevelUpEvent{NewLevel: 10, OldLevel: 9})
@@ -1165,8 +1244,8 @@ func main() {
         Bundle(combat).
         Bundle(party).
         Bundle(economy).
-        PlayerProvider(&StatusProvider{}).
-        EntityProvider(&PartyProvider{}).
+        PeerProvider(&StatusProvider{}).
+        SharedProvider(&PartyProvider{}).
         Init()
 }
 ```
@@ -1273,7 +1352,7 @@ mngr.NewSession(p *player.Player) *Session
 mngr.NewSession(p *player.Player) (*Session, error)
 mngr.GetSessionByUUID(id uuid.UUID) *Session
 mngr.GetSessionByName(name string) *Session
-mngr.GetSessionByXUID(xuid string) *Session
+mngr.GetSessionByID(xuid string) *Session
 mngr.GetSessionByHandle(h *world.EntityHandle) *Session
 mngr.AllSessions() []*Session
 mngr.AllSessionsInWorld(w *world.World) []*Session
@@ -1284,12 +1363,16 @@ mngr.Broadcast(event any)
 mngr.BroadcastExcept(event any, exclude ...*Session)
 
 // Federation
-mngr.RegisterPlayerProvider(p PlayerProvider, opts ...ProviderOption)
-mngr.RegisterEntityProvider(p EntityProvider, opts ...ProviderOption)
+mngr.RegisterPeerProvider(p PeerProvider, opts ...ProviderOption)
+mngr.RegisterSharedProvider(p SharedProvider, opts ...ProviderOption)
 
 // Lifecycle
 mngr.Shutdown()
 mngr.TickNumber() uint64
+
+// Spawn
+SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Session
+SpawnEntity(tx *world.Tx, cfg ActorConfig) *Session
 ```
 
 ### Session
@@ -1419,8 +1502,8 @@ builder.Handler(h Handler) *Builder
 builder.Loop(sys Runnable, interval time.Duration, stage Stage) *Builder
 builder.Task(sys Runnable, stage Stage) *Builder
 builder.Command(command cmd.Command) *Builder
-builder.PlayerProvider(p PlayerProvider, opts ...ProviderOption) *Builder
-builder.EntityProvider(p EntityProvider, opts ...ProviderOption) *Builder
+builder.PeerProvider(p PeerProvider, opts ...ProviderOption) *Builder
+builder.SharedProvider(p SharedProvider, opts ...ProviderOption) *Builder
 builder.Init() *Manager
 ```
 

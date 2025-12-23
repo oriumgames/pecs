@@ -1,6 +1,7 @@
 package pecs
 
 import (
+	"maps"
 	"reflect"
 	"sync"
 	"unsafe"
@@ -216,9 +217,7 @@ func (rs *RelationSet[T]) getTargets() map[*Session]struct{} {
 		return nil
 	}
 	result := make(map[*Session]struct{}, len(rs.targets))
-	for k, v := range rs.targets {
-		result[k] = v
-	}
+	maps.Copy(result, rs.targets)
 	return result
 }
 

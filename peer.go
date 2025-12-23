@@ -11,7 +11,7 @@ import (
 //
 // When resolved:
 //   - If the player is on the same server, their local Session component is used directly.
-//   - If the player is remote, PECS fetches and syncs their data via the registered PlayerProvider.
+//   - If the player is remote, PECS fetches and syncs their data via the registered PeerProvider.
 //
 // Usage:
 //
@@ -60,7 +60,7 @@ func (p *Peer[T]) IsSet() bool {
 
 // Resolve fetches the target player's component.
 // If the player is local, returns their component directly.
-// If remote, fetches via the registered PlayerProvider.
+// If remote, fetches via the registered PeerProvider.
 // Returns (nil, false) if the peer is not set, player doesn't exist,
 // or the component is not available.
 func (p *Peer[T]) Resolve(m *Manager) (*T, bool) {

@@ -12,9 +12,9 @@ type Provider interface {
 	Name() string
 }
 
-// PlayerProvider fetches and syncs per-player data for Peer[T] resolution.
+// PeerProvider fetches and syncs per-player data for Peer[T] resolution.
 // Implement this interface to enable cross-server player data access.
-type PlayerProvider interface {
+type PeerProvider interface {
 	Provider
 
 	// PlayerComponents returns the component types this provider handles.
@@ -36,9 +36,9 @@ type PlayerProvider interface {
 	SubscribePlayer(ctx context.Context, playerID string, updates chan<- PlayerUpdate) (Subscription, error)
 }
 
-// EntityProvider fetches and syncs shared entity data for Shared[T] resolution.
+// SharedProvider fetches and syncs shared entity data for Shared[T] resolution.
 // Implement this interface for data shared across multiple players (parties, matches, etc.).
-type EntityProvider interface {
+type SharedProvider interface {
 	Provider
 
 	// EntityComponents returns the component types this provider handles.

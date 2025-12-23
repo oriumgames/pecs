@@ -16,12 +16,12 @@ type peerCache struct {
 	// entries maps playerID -> *peerCacheEntry
 	entries sync.Map
 
-	// providerIndex maps component type -> []PlayerProvider
-	providerIndex   map[reflect.Type][]PlayerProvider
+	// providerIndex maps component type -> []PeerProvider
+	providerIndex   map[reflect.Type][]PeerProvider
 	providerIndexMu sync.RWMutex
 
 	// providers holds all registered player providers
-	providers   []playerProviderEntry
+	providers   []peerProviderEntry
 	providersMu sync.RWMutex
 
 	// cleanupInterval is how often to run cache cleanup
@@ -36,8 +36,8 @@ type peerCache struct {
 	cancel context.CancelFunc
 }
 
-type playerProviderEntry struct {
-	provider PlayerProvider
+type peerProviderEntry struct {
+	provider PeerProvider
 	options  ProviderOptions
 }
 
@@ -106,7 +106,7 @@ func newPeerCache(manager *Manager) *peerCache {
 	ctx, cancel := context.WithCancel(context.Background())
 	pc := &peerCache{
 		manager:         manager,
-		providerIndex:   make(map[reflect.Type][]PlayerProvider),
+		providerIndex:   make(map[reflect.Type][]PeerProvider),
 		cleanupInterval: cacheCleanupInterval,
 		stopCleanup:     make(chan struct{}),
 		workerSem:       make(chan struct{}, cacheMaxWorkers),
@@ -146,9 +146,9 @@ func (pc *peerCache) spawnWorker(fn func()) {
 }
 
 // registerProvider adds a player provider to the cache.
-func (pc *peerCache) registerProvider(p PlayerProvider, opts ProviderOptions) {
+func (pc *peerCache) registerProvider(p PeerProvider, opts ProviderOptions) {
 	pc.providersMu.Lock()
-	pc.providers = append(pc.providers, playerProviderEntry{p, opts})
+	pc.providers = append(pc.providers, peerProviderEntry{p, opts})
 	pc.providersMu.Unlock()
 
 	// Index by component type
@@ -160,17 +160,17 @@ func (pc *peerCache) registerProvider(p PlayerProvider, opts ProviderOptions) {
 }
 
 // getProviders returns providers that handle the given component type.
-func (pc *peerCache) getProviders(componentType reflect.Type) []PlayerProvider {
+func (pc *peerCache) getProviders(componentType reflect.Type) []PeerProvider {
 	pc.providerIndexMu.RLock()
 	defer pc.providerIndexMu.RUnlock()
 	return pc.providerIndex[componentType]
 }
 
 // getAllProviders returns all registered provider entries.
-func (pc *peerCache) getAllProviders() []playerProviderEntry {
+func (pc *peerCache) getAllProviders() []peerProviderEntry {
 	pc.providersMu.RLock()
 	defer pc.providersMu.RUnlock()
-	result := make([]playerProviderEntry, len(pc.providers))
+	result := make([]peerProviderEntry, len(pc.providers))
 	copy(result, pc.providers)
 	return result
 }
@@ -302,7 +302,7 @@ func (pc *peerCache) fetchAndSubscribe(entry *peerCacheEntry, componentType refl
 
 	for _, p := range providers {
 		wg.Add(1)
-		go func(provider PlayerProvider) {
+		go func(provider PeerProvider) {
 			defer wg.Done()
 
 			// Fetch initial data
@@ -422,7 +422,7 @@ func (pc *peerCache) batchFetch(playerIDs []string, indices []int, entries []*pe
 }
 
 // subscribeEntry sets up subscription for an entry.
-func (pc *peerCache) subscribeEntry(entry *peerCacheEntry, provider PlayerProvider) {
+func (pc *peerCache) subscribeEntry(entry *peerCacheEntry, provider PeerProvider) {
 	// Use cache's context so subscriptions are cancelled on shutdown
 	sub, err := provider.SubscribePlayer(pc.ctx, entry.playerID, entry.updateCh)
 	if err != nil {
@@ -538,12 +538,12 @@ type sharedCache struct {
 	// entries maps entityID -> *sharedCacheEntry
 	entries sync.Map
 
-	// providerIndex maps data type -> []EntityProvider
-	providerIndex   map[reflect.Type][]EntityProvider
+	// providerIndex maps data type -> []SharedProvider
+	providerIndex   map[reflect.Type][]SharedProvider
 	providerIndexMu sync.RWMutex
 
 	// providers holds all registered entity providers
-	providers   []entityProviderEntry
+	providers   []sharedProviderEntry
 	providersMu sync.RWMutex
 
 	// cleanupInterval is how often to run cache cleanup
@@ -558,8 +558,8 @@ type sharedCache struct {
 	cancel context.CancelFunc
 }
 
-type entityProviderEntry struct {
-	provider EntityProvider
+type sharedProviderEntry struct {
+	provider SharedProvider
 	options  ProviderOptions
 }
 
@@ -602,7 +602,7 @@ func newSharedCache(manager *Manager) *sharedCache {
 	ctx, cancel := context.WithCancel(context.Background())
 	sc := &sharedCache{
 		manager:         manager,
-		providerIndex:   make(map[reflect.Type][]EntityProvider),
+		providerIndex:   make(map[reflect.Type][]SharedProvider),
 		cleanupInterval: cacheCleanupInterval,
 		stopCleanup:     make(chan struct{}),
 		workerSem:       make(chan struct{}, cacheMaxWorkers),
@@ -641,9 +641,9 @@ func (sc *sharedCache) spawnWorker(fn func()) {
 }
 
 // registerProvider adds an entity provider to the cache.
-func (sc *sharedCache) registerProvider(p EntityProvider, opts ProviderOptions) {
+func (sc *sharedCache) registerProvider(p SharedProvider, opts ProviderOptions) {
 	sc.providersMu.Lock()
-	sc.providers = append(sc.providers, entityProviderEntry{p, opts})
+	sc.providers = append(sc.providers, sharedProviderEntry{p, opts})
 	sc.providersMu.Unlock()
 
 	// Index by data type
@@ -655,7 +655,7 @@ func (sc *sharedCache) registerProvider(p EntityProvider, opts ProviderOptions) 
 }
 
 // getProviders returns providers that handle the given data type.
-func (sc *sharedCache) getProviders(dataType reflect.Type) []EntityProvider {
+func (sc *sharedCache) getProviders(dataType reflect.Type) []SharedProvider {
 	sc.providerIndexMu.RLock()
 	defer sc.providerIndexMu.RUnlock()
 	return sc.providerIndex[dataType]
@@ -817,7 +817,7 @@ func (sc *sharedCache) batchFetch(entityIDs []string, indices []int, entries []*
 }
 
 // subscribeEntry sets up subscription for an entry.
-func (sc *sharedCache) subscribeEntry(entry *sharedCacheEntry, provider EntityProvider) {
+func (sc *sharedCache) subscribeEntry(entry *sharedCacheEntry, provider SharedProvider) {
 	// Use cache's context so subscriptions are cancelled on shutdown
 	sub, err := provider.SubscribeEntity(sc.ctx, entry.entityID, entry.updateCh)
 	if err != nil {
@@ -881,7 +881,7 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 		entry.status.Store(cacheStatusReady)
 
 		// Subscribe for updates
-		go func(provider EntityProvider) {
+		go func(provider SharedProvider) {
 			sub, err := provider.SubscribeEntity(context.Background(), entry.entityID, entry.updateCh)
 			if err != nil {
 				return

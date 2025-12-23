@@ -370,7 +370,7 @@ func (h *SessionHandler) HandleLecternPageTurn(ctx *player.Context, pos cube.Pos
 }
 
 // HandleItemDamage handles damaging an item.
-func (h *SessionHandler) HandleItemDamage(ctx *player.Context, it item.Stack, damage int) {
+func (h *SessionHandler) HandleItemDamage(ctx *player.Context, it item.Stack, damage *int) {
 	h.executeHandlers(func(ph Handler) { ph.HandleItemDamage(ctx, it, damage) })
 }
 

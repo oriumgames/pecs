@@ -60,6 +60,15 @@ type Session struct {
 	// expirations tracks component expiration times (ComponentID -> unix millis)
 	expirations  map[ComponentID]int64
 	expirationMu sync.Mutex
+
+	// isFake is cached for fast lookup (set once at spawn, immutable)
+	isFake bool
+
+	// isEntity is cached for fast lookup (set once at spawn, immutable)
+	isEntity bool
+
+	// fakeID caches the federated ID for fake players (set once at spawn)
+	fakeID string
 }
 
 // Handle returns the underlying EntityHandle.
@@ -82,10 +91,34 @@ func (s *Session) XUID() string {
 	return s.xuid
 }
 
-// ID returns the player's persistent identifier (XUID).
+// ID returns the federated identifier for this session.
+// For real players, this is their XUID.
+// For fake players, this is their FakeMarker.ID.
+// For entities, this returns an empty string (no federated ID).
 // This is used for Peer[T] resolution to identify players across servers.
 func (s *Session) ID() string {
-	return s.xuid
+	// Real player: return XUID
+	if s.xuid != "" {
+		return s.xuid
+	}
+	// Fake player: return cached fakeID
+	return s.fakeID
+}
+
+// IsFake returns true if this session is a fake player (testing bot).
+func (s *Session) IsFake() bool {
+	return s.isFake
+}
+
+// IsEntity returns true if this session is an NPC entity.
+func (s *Session) IsEntity() bool {
+	return s.isEntity
+}
+
+// IsActor returns true if this session is an actor (fake player or entity).
+// Bots have session.Nop as their network session.
+func (s *Session) IsActor() bool {
+	return s.IsFake() || s.IsEntity()
 }
 
 // Player retrieves the *player.Player instance associated with this session within the given transaction.
@@ -393,7 +426,7 @@ func (s *Session) removeComponentByID(id ComponentID) {
 		detachable.Detach(s)
 	}
 
-	s.Dispatch(ComponentDetachEvent{
+	s.Dispatch(&ComponentDetachEvent{
 		ComponentType: t,
 	})
 }

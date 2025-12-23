@@ -35,8 +35,8 @@ type Bundle struct {
 	Injections []any
 
 	// Federation providers
-	playerProviders []playerProviderRegistration
-	entityProviders []entityProviderRegistration
+	peerProviders   []peerProviderRegistration
+	sharedProviders []sharedProviderRegistration
 
 	// meta holds computed metadata for systems
 	handlerMeta []*SystemMeta
@@ -143,15 +143,15 @@ func (b *Bundle) Task(sys Runnable, stage Stage) *Bundle {
 	return b
 }
 
-// PlayerProvider registers a provider for Peer[T] resolution.
-func (b *Bundle) PlayerProvider(p PlayerProvider, opts ...ProviderOption) *Bundle {
-	b.playerProviders = append(b.playerProviders, playerProviderRegistration{p, opts})
+// PeerProvider registers a provider for Peer[T] resolution.
+func (b *Bundle) PeerProvider(p PeerProvider, opts ...ProviderOption) *Bundle {
+	b.peerProviders = append(b.peerProviders, peerProviderRegistration{p, opts})
 	return b
 }
 
-// EntityProvider registers a provider for Shared[T] resolution.
-func (b *Bundle) EntityProvider(p EntityProvider, opts ...ProviderOption) *Bundle {
-	b.entityProviders = append(b.entityProviders, entityProviderRegistration{p, opts})
+// SharedProvider registers a provider for Shared[T] resolution.
+func (b *Bundle) SharedProvider(p SharedProvider, opts ...ProviderOption) *Bundle {
+	b.sharedProviders = append(b.sharedProviders, sharedProviderRegistration{p, opts})
 	return b
 }
 

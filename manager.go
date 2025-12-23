@@ -11,6 +11,7 @@ import (
 
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
+	"github.com/go-gl/mathgl/mgl64"
 	"github.com/google/uuid"
 )
 
@@ -48,6 +49,10 @@ type Manager struct {
 	sessionsByXUID   map[string]*Session
 	sessionsByXUIDMu sync.RWMutex
 
+	// sessionsByFakeID provides FakeMarker.ID-based session lookup for fake players
+	sessionsByFakeID   map[string]*Session
+	sessionsByFakeIDMu sync.RWMutex
+
 	// sessionsByWorld groups sessions by world for optimized scheduling
 	sessionsByWorld   map[*world.World]map[*Session]struct{}
 	sessionsByWorldMu sync.RWMutex
@@ -69,14 +74,15 @@ type Manager struct {
 // newManager creates a new manager.
 func newManager() *Manager {
 	m := &Manager{
-		registry:        newComponentRegistry(),
-		injections:      make(map[reflect.Type]unsafe.Pointer),
-		sessions:        make(map[*world.EntityHandle]*Session),
-		sessionsByUUID:  make(map[uuid.UUID]*Session),
-		sessionsByName:  make(map[string]*Session),
-		sessionsByXUID:  make(map[string]*Session),
-		sessionsByWorld: make(map[*world.World]map[*Session]struct{}),
-		taskQueue:       newTaskQueue(),
+		registry:         newComponentRegistry(),
+		injections:       make(map[reflect.Type]unsafe.Pointer),
+		sessions:         make(map[*world.EntityHandle]*Session),
+		sessionsByUUID:   make(map[uuid.UUID]*Session),
+		sessionsByName:   make(map[string]*Session),
+		sessionsByXUID:   make(map[string]*Session),
+		sessionsByFakeID: make(map[string]*Session),
+		sessionsByWorld:  make(map[*world.World]map[*Session]struct{}),
+		taskQueue:        newTaskQueue(),
 	}
 	m.scheduler = newScheduler(m)
 	m.peerCache = newPeerCache(m)
@@ -209,6 +215,13 @@ func (m *Manager) removeSession(s *Session) {
 		m.sessionsByWorldMu.Unlock()
 	}
 
+	// Clean up fakeID index if this was a fake player
+	if s.IsFake() && s.fakeID != "" {
+		m.sessionsByFakeIDMu.Lock()
+		delete(m.sessionsByFakeID, s.fakeID)
+		m.sessionsByFakeIDMu.Unlock()
+	}
+
 	// Clear relations pointing to this session
 	m.clearAllRelationsTo(s)
 }
@@ -244,11 +257,31 @@ func (m *Manager) GetSessionByName(name string) *Session {
 	return m.sessionsByName[name]
 }
 
-// GetSessionByXUID retrieves a session by player XUID.
-func (m *Manager) GetSessionByXUID(xuid string) *Session {
+// getSessionByXUID retrieves a session by player XUID (internal).
+func (m *Manager) getSessionByXUID(xuid string) *Session {
 	m.sessionsByXUIDMu.RLock()
 	defer m.sessionsByXUIDMu.RUnlock()
 	return m.sessionsByXUID[xuid]
+}
+
+// GetSessionByID retrieves a session by its federated ID.
+// This works for both real players (using XUID) and fake players (using FakeMarker.ID).
+// Returns nil for entities (which have no federated ID).
+func (m *Manager) GetSessionByID(id string) *Session {
+	if id == "" {
+		return nil
+	}
+
+	// Fast path: check XUID index first (real players)
+	if s := m.getSessionByXUID(id); s != nil {
+		return s
+	}
+
+	// Fast path: check fakeID index (fake players)
+	m.sessionsByFakeIDMu.RLock()
+	s := m.sessionsByFakeID[id]
+	m.sessionsByFakeIDMu.RUnlock()
+	return s
 }
 
 // AllSessions returns a slice of all active sessions.
@@ -437,8 +470,8 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// RegisterPlayerProvider registers a provider for Peer[T] resolution.
-func (m *Manager) RegisterPlayerProvider(p PlayerProvider, opts ...ProviderOption) {
+// RegisterPeerProvider registers a provider for Peer[T] resolution.
+func (m *Manager) RegisterPeerProvider(p PeerProvider, opts ...ProviderOption) {
 	options := defaultProviderOptions()
 	for _, opt := range opts {
 		opt(&options)
@@ -446,8 +479,8 @@ func (m *Manager) RegisterPlayerProvider(p PlayerProvider, opts ...ProviderOptio
 	m.peerCache.registerProvider(p, options)
 }
 
-// RegisterEntityProvider registers a provider for Shared[T] resolution.
-func (m *Manager) RegisterEntityProvider(p EntityProvider, opts ...ProviderOption) {
+// RegisterSharedProvider registers a provider for Shared[T] resolution.
+func (m *Manager) RegisterSharedProvider(p SharedProvider, opts ...ProviderOption) {
 	options := defaultProviderOptions()
 	for _, opt := range opts {
 		opt(&options)
@@ -455,16 +488,84 @@ func (m *Manager) RegisterEntityProvider(p EntityProvider, opts ...ProviderOptio
 	m.sharedCache.registerProvider(p, options)
 }
 
+// spawnActor creates a fake player entity and registers it as a PECS session.
+// This is the internal helper used by SpawnFake and SpawnEntity.
+// Unlike NewSession, this does not initialize from providers (bots don't have XUID).
+func (m *Manager) spawnActor(tx *world.Tx, cfg ActorConfig) *Session {
+	// Create player entity spawn options
+	opts := world.EntitySpawnOpts{Position: cfg.Position}
+
+	// Create the entity handle with player type
+	ent := opts.New(player.Type, player.Config{
+		Name:     cfg.Name,
+		Skin:     cfg.Skin,
+		Position: cfg.Position,
+	})
+
+	// Add to world and get the player
+	e := tx.AddEntity(ent)
+	p := e.(*player.Player)
+
+	// Apply rotation
+	p.Move(mgl64.Vec3{}, cfg.Yaw, cfg.Pitch)
+
+	// Create session manually (no provider init for bots)
+	s := &Session{
+		handle:  p.H(),
+		uuid:    p.UUID(),
+		name:    p.Name(),
+		xuid:    "", // Bots have no XUID
+		manager: m,
+	}
+
+	s.updateWorldCache(tx.World())
+	m.addSession(s)
+
+	// Set the PECS handler on the player
+	p.Handle(NewHandler(s, p))
+
+	return s
+}
+
+// SpawnFake creates a fake player (testing bot) and registers it as a PECS session.
+// The fakeID is used as the federated identifier for Peer[T] resolution.
+// Returns the session for adding components.
+func (m *Manager) SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Session {
+	sess := m.spawnActor(tx, cfg)
+	sess.isFake = true
+	sess.fakeID = fakeID
+	Add(sess, &FakeMarker{})
+
+	// Register in fakeID index for fast lookup
+	if fakeID != "" {
+		m.sessionsByFakeIDMu.Lock()
+		m.sessionsByFakeID[fakeID] = sess
+		m.sessionsByFakeIDMu.Unlock()
+	}
+
+	return sess
+}
+
+// SpawnEntity creates an NPC entity and registers it as a PECS session.
+// Entities do not participate in cross-server Peer[T] lookups.
+// Returns the session for adding components.
+func (m *Manager) SpawnEntity(tx *world.Tx, cfg ActorConfig) *Session {
+	sess := m.spawnActor(tx, cfg)
+	sess.isEntity = true
+	Add(sess, &EntityMarker{})
+	return sess
+}
+
 // ResolvePeer resolves a Peer[T] reference to the target's component.
 // If the player is local, returns their component directly.
-// If remote, fetches and caches via the registered PlayerProvider.
+// If remote, fetches and caches via the registered PeerProvider.
 func (m *Manager) ResolvePeer(playerID string, componentType reflect.Type) unsafe.Pointer {
 	if playerID == "" {
 		return nil
 	}
 
-	// Fast path: check if player is local
-	if session := m.GetSessionByXUID(playerID); session != nil && !session.closed.Load() {
+	// Fast path: check if player is local (works for real and fake players)
+	if session := m.GetSessionByID(playerID); session != nil && !session.closed.Load() {
 		// Get component ID for this type
 		compID, ok := m.registry.getID(componentType)
 		if !ok {
@@ -500,7 +601,7 @@ func (m *Manager) ResolvePeers(playerIDs []string, componentType reflect.Type) [
 			continue
 		}
 
-		if session := m.GetSessionByXUID(id); session != nil && !session.closed.Load() {
+		if session := m.GetSessionByID(id); session != nil && !session.closed.Load() {
 			if hasCompID {
 				session.mu.RLock()
 				results[i] = session.getComponentUnsafe(compID)
@@ -550,7 +651,7 @@ func (m *Manager) TickNumber() uint64 {
 // NewSession creates a new session for a player.
 // This should be called when a player joins and the returned session
 // should be passed to player.Handle() wrapped with NewHandler().
-// Automatically fetches data from registered PlayerProviders and subscribes to updates.
+// Automatically fetches data from registered PeerProviders and subscribes to updates.
 func (m *Manager) NewSession(p *player.Player) (*Session, error) {
 	s := &Session{
 		handle:  p.H(),

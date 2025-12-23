@@ -11,17 +11,17 @@ import (
 type Builder struct {
 	bundles         []*Bundle
 	injections      []any
-	playerProviders []playerProviderRegistration
-	entityProviders []entityProviderRegistration
+	peerProviders   []peerProviderRegistration
+	sharedProviders []sharedProviderRegistration
 }
 
-type playerProviderRegistration struct {
-	provider PlayerProvider
+type peerProviderRegistration struct {
+	provider PeerProvider
 	options  []ProviderOption
 }
 
-type entityProviderRegistration struct {
-	provider EntityProvider
+type sharedProviderRegistration struct {
+	provider SharedProvider
 	options  []ProviderOption
 }
 
@@ -70,25 +70,25 @@ func (b *Builder) Task(sys Runnable, stage Stage) *Builder {
 	return b
 }
 
-// PlayerProvider registers a provider for Peer[T] resolution.
-// PlayerProviders fetch and sync data for remote players.
+// PeerProvider registers a provider for Peer[T] resolution.
+// PeerProviders fetch and sync data for remote players.
 //
 // Example:
 //
-//	builder.PlayerProvider(&StatusProvider{...}, pecs.WithFetchTimeout(2000))
-func (b *Builder) PlayerProvider(p PlayerProvider, opts ...ProviderOption) *Builder {
-	b.playerProviders = append(b.playerProviders, playerProviderRegistration{p, opts})
+//	builder.PeerProvider(&StatusProvider{...}, pecs.WithFetchTimeout(2000))
+func (b *Builder) PeerProvider(p PeerProvider, opts ...ProviderOption) *Builder {
+	b.peerProviders = append(b.peerProviders, peerProviderRegistration{p, opts})
 	return b
 }
 
-// EntityProvider registers a provider for Shared[T] resolution.
-// EntityProviders fetch and sync data for shared entities (parties, matches, etc.).
+// SharedProvider registers a provider for Shared[T] resolution.
+// SharedProviders fetch and sync data for shared entities (parties, matches, etc.).
 //
 // Example:
 //
-//	builder.EntityProvider(&PartyProvider{...})
-func (b *Builder) EntityProvider(p EntityProvider, opts ...ProviderOption) *Builder {
-	b.entityProviders = append(b.entityProviders, entityProviderRegistration{p, opts})
+//	builder.SharedProvider(&PartyProvider{...})
+func (b *Builder) SharedProvider(p SharedProvider, opts ...ProviderOption) *Builder {
+	b.sharedProviders = append(b.sharedProviders, sharedProviderRegistration{p, opts})
 	return b
 }
 
@@ -125,19 +125,19 @@ func (b *Builder) Init() *Manager {
 	}
 
 	// Register federation providers
-	for _, reg := range b.playerProviders {
-		m.RegisterPlayerProvider(reg.provider, reg.options...)
+	for _, reg := range b.peerProviders {
+		m.RegisterPeerProvider(reg.provider, reg.options...)
 	}
-	for _, reg := range b.entityProviders {
-		m.RegisterEntityProvider(reg.provider, reg.options...)
+	for _, reg := range b.sharedProviders {
+		m.RegisterSharedProvider(reg.provider, reg.options...)
 	}
 
 	for _, bundle := range m.bundles {
-		for _, reg := range bundle.playerProviders {
-			m.RegisterPlayerProvider(reg.provider, reg.options...)
+		for _, reg := range bundle.peerProviders {
+			m.RegisterPeerProvider(reg.provider, reg.options...)
 		}
-		for _, reg := range bundle.entityProviders {
-			m.RegisterEntityProvider(reg.provider, reg.options...)
+		for _, reg := range bundle.sharedProviders {
+			m.RegisterSharedProvider(reg.provider, reg.options...)
 		}
 	}
 

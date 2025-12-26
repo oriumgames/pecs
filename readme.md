@@ -1,6 +1,6 @@
 # PECS
 
-**Player Entity Component System for Dragonfly**
+**Player Event Component System for Dragonfly**
 
 PECS is a game architecture framework designed for [Dragonfly](https://github.com/df-mc/dragonfly) Minecraft servers. It provides structured game logic through handlers, components, systems, and dependency injection while respecting Dragonfly's transaction-based world model.
 

@@ -25,6 +25,8 @@ type EventMove struct {
 	Rotation cube.Rotation
 }
 
+func (e *EventMove) Cancel() { e.Ctx.Cancel() }
+
 // EventJump is dispatched when a player jumps.
 type EventJump struct {
 	Player *player.Player
@@ -35,6 +37,8 @@ type EventTeleport struct {
 	Ctx      *player.Context
 	Position mgl64.Vec3
 }
+
+func (e *EventTeleport) Cancel() { e.Ctx.Cancel() }
 
 // EventChangeWorld is dispatched when a player changes worlds.
 type EventChangeWorld struct {
@@ -49,17 +53,23 @@ type EventToggleSprint struct {
 	After bool
 }
 
+func (e *EventToggleSprint) Cancel() { e.Ctx.Cancel() }
+
 // EventToggleSneak is dispatched when a player toggles sneaking.
 type EventToggleSneak struct {
 	Ctx   *player.Context
 	After bool
 }
 
+func (e *EventToggleSneak) Cancel() { e.Ctx.Cancel() }
+
 // EventChat is dispatched when a player sends a chat message.
 type EventChat struct {
 	Ctx     *player.Context
 	Message *string
 }
+
+func (e *EventChat) Cancel() { e.Ctx.Cancel() }
 
 // EventFoodLoss is dispatched when a player loses food.
 type EventFoodLoss struct {
@@ -68,12 +78,16 @@ type EventFoodLoss struct {
 	To   *int
 }
 
+func (e *EventFoodLoss) Cancel() { e.Ctx.Cancel() }
+
 // EventHeal is dispatched when a player is healed.
 type EventHeal struct {
 	Ctx    *player.Context
 	Health *float64
 	Source world.HealingSource
 }
+
+func (e *EventHeal) Cancel() { e.Ctx.Cancel() }
 
 // EventHurt is dispatched when a player is hurt.
 type EventHurt struct {
@@ -83,6 +97,8 @@ type EventHurt struct {
 	Immunity *time.Duration
 	Source   world.DamageSource
 }
+
+func (e *EventHurt) Cancel() { e.Ctx.Cancel() }
 
 // EventDeath is dispatched when a player dies.
 type EventDeath struct {
@@ -104,17 +120,23 @@ type EventSkinChange struct {
 	Skin *skin.Skin
 }
 
+func (e *EventSkinChange) Cancel() { e.Ctx.Cancel() }
+
 // EventFireExtinguish is dispatched when a player extinguishes fire.
 type EventFireExtinguish struct {
 	Ctx      *player.Context
 	Position cube.Pos
 }
 
+func (e *EventFireExtinguish) Cancel() { e.Ctx.Cancel() }
+
 // EventStartBreak is dispatched when a player starts breaking a block.
 type EventStartBreak struct {
 	Ctx      *player.Context
 	Position cube.Pos
 }
+
+func (e *EventStartBreak) Cancel() { e.Ctx.Cancel() }
 
 // EventBlockBreak is dispatched when a player breaks a block.
 type EventBlockBreak struct {
@@ -124,12 +146,16 @@ type EventBlockBreak struct {
 	Experience *int
 }
 
+func (e *EventBlockBreak) Cancel() { e.Ctx.Cancel() }
+
 // EventBlockPlace is dispatched when a player places a block.
 type EventBlockPlace struct {
 	Ctx      *player.Context
 	Position cube.Pos
 	Block    world.Block
 }
+
+func (e *EventBlockPlace) Cancel() { e.Ctx.Cancel() }
 
 // EventBlockPick is dispatched when a player picks a block.
 type EventBlockPick struct {
@@ -138,10 +164,14 @@ type EventBlockPick struct {
 	Block    world.Block
 }
 
+func (e *EventBlockPick) Cancel() { e.Ctx.Cancel() }
+
 // EventItemUse is dispatched when a player uses an item.
 type EventItemUse struct {
 	Ctx *player.Context
 }
+
+func (e *EventItemUse) Cancel() { e.Ctx.Cancel() }
 
 // EventItemUseOnBlock is dispatched when a player uses an item on a block.
 type EventItemUseOnBlock struct {
@@ -151,11 +181,15 @@ type EventItemUseOnBlock struct {
 	ClickPos mgl64.Vec3
 }
 
+func (e *EventItemUseOnBlock) Cancel() { e.Ctx.Cancel() }
+
 // EventItemUseOnEntity is dispatched when a player uses an item on an entity.
 type EventItemUseOnEntity struct {
 	Ctx    *player.Context
 	Entity world.Entity
 }
+
+func (e *EventItemUseOnEntity) Cancel() { e.Ctx.Cancel() }
 
 // EventItemRelease is dispatched when a player releases a charged item.
 type EventItemRelease struct {
@@ -164,11 +198,15 @@ type EventItemRelease struct {
 	Duration time.Duration
 }
 
+func (e *EventItemRelease) Cancel() { e.Ctx.Cancel() }
+
 // EventItemConsume is dispatched when a player consumes an item.
 type EventItemConsume struct {
 	Ctx  *player.Context
 	Item item.Stack
 }
+
+func (e *EventItemConsume) Cancel() { e.Ctx.Cancel() }
 
 // EventAttackEntity is dispatched when a player attacks an entity.
 type EventAttackEntity struct {
@@ -179,16 +217,22 @@ type EventAttackEntity struct {
 	Critical *bool
 }
 
+func (e *EventAttackEntity) Cancel() { e.Ctx.Cancel() }
+
 // EventExperienceGain is dispatched when a player gains experience.
 type EventExperienceGain struct {
 	Ctx    *player.Context
 	Amount *int
 }
 
+func (e *EventExperienceGain) Cancel() { e.Ctx.Cancel() }
+
 // EventPunchAir is dispatched when a player punches air.
 type EventPunchAir struct {
 	Ctx *player.Context
 }
+
+func (e *EventPunchAir) Cancel() { e.Ctx.Cancel() }
 
 // EventSignEdit is dispatched when a player edits a sign.
 type EventSignEdit struct {
@@ -199,6 +243,8 @@ type EventSignEdit struct {
 	NewText   string
 }
 
+func (e *EventSignEdit) Cancel() { e.Ctx.Cancel() }
+
 // EventLecternPageTurn is dispatched when a player turns a lectern page.
 type EventLecternPageTurn struct {
 	Ctx      *player.Context
@@ -207,6 +253,8 @@ type EventLecternPageTurn struct {
 	NewPage  *int
 }
 
+func (e *EventLecternPageTurn) Cancel() { e.Ctx.Cancel() }
+
 // EventItemDamage is dispatched when an item takes damage.
 type EventItemDamage struct {
 	Ctx    *player.Context
@@ -214,11 +262,15 @@ type EventItemDamage struct {
 	Damage *int
 }
 
+func (e *EventItemDamage) Cancel() { e.Ctx.Cancel() }
+
 // EventItemPickup is dispatched when a player picks up an item.
 type EventItemPickup struct {
 	Ctx  *player.Context
 	Item *item.Stack
 }
+
+func (e *EventItemPickup) Cancel() { e.Ctx.Cancel() }
 
 // EventHeldSlotChange is dispatched when a player changes their held slot.
 type EventHeldSlotChange struct {
@@ -227,11 +279,15 @@ type EventHeldSlotChange struct {
 	To   int
 }
 
+func (e *EventHeldSlotChange) Cancel() { e.Ctx.Cancel() }
+
 // EventItemDrop is dispatched when a player drops an item.
 type EventItemDrop struct {
 	Ctx  *player.Context
 	Item item.Stack
 }
+
+func (e *EventItemDrop) Cancel() { e.Ctx.Cancel() }
 
 // EventTransfer is dispatched when a player is transferred to another server.
 type EventTransfer struct {
@@ -239,12 +295,16 @@ type EventTransfer struct {
 	Address *net.UDPAddr
 }
 
+func (e *EventTransfer) Cancel() { e.Ctx.Cancel() }
+
 // EventCommandExecution is dispatched when a player executes a command.
 type EventCommandExecution struct {
 	Ctx     *player.Context
 	Command cmd.Command
 	Args    []string
 }
+
+func (e *EventCommandExecution) Cancel() { e.Ctx.Cancel() }
 
 // EventJoin is dispatched when a player joins the server.
 type EventJoin struct {

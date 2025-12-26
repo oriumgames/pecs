@@ -88,6 +88,22 @@ func (b *Bundle) PostInit(hook func(*Manager)) *Bundle {
 	return b
 }
 
+// Build returns a callback function that returns this bundle.
+// This allows for cleaner inline bundle initialization:
+//
+//	bund := pecs.NewBundle("gameplay").
+//	    Handler(&ExampleHandler{}).
+//	    Build()
+//
+//	mngr := pecs.NewBuilder().
+//	    Bundle(bund).
+//	    Init()
+func (b *Bundle) Build() func(*Manager) *Bundle {
+	return func(*Manager) *Bundle {
+		return b
+	}
+}
+
 // Command registers a Dragonfly command for this bundle.
 // Commands are automatically registered with Dragonfly's command system
 // when the bundle is built.

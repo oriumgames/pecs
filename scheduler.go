@@ -237,7 +237,7 @@ func (s *Scheduler) processGlobalWorldBatches(now time.Time, w *world.World, bat
 						func() {
 							defer func() {
 								if r := recover(); r != nil {
-									s.handleSystemPanic("global loop", loop.meta.Name, r)
+									s.handleSystemPanic("global loop", loop.bundle.name, loop.meta.Name, r)
 								}
 							}()
 							system.Run(tx)
@@ -395,7 +395,7 @@ func (s *Scheduler) executeLoopForSessions(tx *world.Tx, sessions []*Session, lo
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					s.handleSystemPanic("loop", loop.meta.Name, r)
+					s.handleSystemPanic("loop", loop.bundle.name, loop.meta.Name, r)
 				}
 			}()
 			system.Run(tx)
@@ -596,8 +596,8 @@ func (s *Scheduler) executeTasksForWorld(w *world.World, tasks []*scheduledTask)
 	})
 }
 
-func (s *Scheduler) handleSystemPanic(kind, name string, recovered any) {
-	err := fmt.Errorf("pecs: panic in %s %s: %v\n%s", kind, name, recovered, debug.Stack())
+func (s *Scheduler) handleSystemPanic(kind, bundle, name string, recovered any) {
+	err := fmt.Errorf("pecs: panic in %s %s.%s: %v\n%s", kind, bundle, name, recovered, debug.Stack())
 	s.shutdownOnce.Do(func() {
 		go func(k, n string, e error) {
 			s.manager.Shutdown()
@@ -645,7 +645,7 @@ func (s *Scheduler) executeTask(tx *world.Tx, task *scheduledTask) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.handleSystemPanic("task", task.meta.Name, r)
+				s.handleSystemPanic("task", task.bundle.name, task.meta.Name, r)
 			}
 		}()
 		task.task.Run(tx)

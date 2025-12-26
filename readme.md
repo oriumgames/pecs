@@ -94,7 +94,8 @@ func main() {
     // Create a bundle for your game logic
     bundle := pecs.NewBundle("gameplay").
         Handler(&DamageHandler{}).
-        Loop(&RegenLoop{}, time.Second, pecs.Default)
+        Loop(&RegenLoop{}, time.Second, pecs.Default).
+        Build()
 
     // Initialize PECS
     mngr := pecs.NewBuilder().
@@ -1234,7 +1235,7 @@ p, sess := pecs.MustForm(sub)    // Panics if not player
 
 ## Bundle Organization
 
-Structure your game with multiple bundles:
+Structure your game with multiple bundles. Bundle names are used in panic/error messages for easier debugging.
 
 ```go
 func main() {
@@ -1242,26 +1243,30 @@ func main() {
         Resource(&ServerConfig{}).
         Handler(&JoinHandler{}).
         Handler(&QuitHandler{}).
-        Loop(&AutoSaveLoop{}, time.Minute, pecs.After)
+        Loop(&AutoSaveLoop{}, time.Minute, pecs.After).
+        Build()
 
     combat := pecs.NewBundle("combat").
         Resource(&CombatConfig{}).
         Handler(&DamageHandler{}).
         Handler(&DeathHandler{}).
         Loop(&CombatTagLoop{}, time.Second, pecs.Default).
-        Task(&RespawnTask{}, pecs.Default)
+        Task(&RespawnTask{}, pecs.Default).
+        Build()
 
     party := pecs.NewBundle("party").
         Resource(&PartyConfig{}).
         Handler(&PartyInviteHandler{}).
         Handler(&PartyChatHandler{}).
-        Command(cmd.New("party", "Party commands", nil, PartyCommand{}))
+        Command(cmd.New("party", "Party commands", nil, PartyCommand{})).
+        Build()
 
     economy := pecs.NewBundle("economy").
         Resource(&EconomyConfig{}).
         Handler(&ShopHandler{}).
         Command(cmd.New("balance", "Check balance", nil, BalanceCommand{})).
-        Command(cmd.New("pay", "Pay another player", nil, PayCommand{}))
+        Command(cmd.New("pay", "Pay another player", nil, PayCommand{})).
+        Build()
 
     mngr := pecs.NewBuilder().
         Resource(&Database{}).
@@ -1536,6 +1541,7 @@ bundle.Handler(h Handler) *Bundle
 bundle.Loop(sys Runnable, interval time.Duration, stage Stage) *Bundle
 bundle.Task(sys Runnable, stage Stage) *Bundle
 bundle.Command(command cmd.Command) *Bundle
+bundle.Build() func(*Manager) *Bundle
 ```
 
 ### Provider Options

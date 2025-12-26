@@ -384,7 +384,7 @@ func (h *WelcomeHandler) HandleJoin(p *player.Player) {
 
 ### Loops
 
-Loops run at fixed intervals for all sessions that match their component requirements.
+Loops run at fixed intervals for all sessions that match their component requirements. Loops without a `*pecs.Session` field or session components are global and run once per interval instead of per-session.
 
 ```go
 type RegenLoop struct {
@@ -410,11 +410,26 @@ bundle.Loop(&RegenLoop{}, time.Second, pecs.Default)
 
 // Run every tick (interval of 0)
 bundle.Loop(&TickLoop{}, 0, pecs.Before)
+
+// Global loop (no Session field) - runs once per interval
+type WorldCleanupLoop struct {
+    pecs.Runnable
+    Manager *pecs.Manager
+    Config  *ServerConfig `pecs:"res"`
+}
+
+func (l *WorldCleanupLoop) Run(tx *world.Tx) {
+    for _, sess := range l.Manager.AllSessions() {
+        // Clean up expired data...
+    }
+}
+
+bundle.Loop(&WorldCleanupLoop{}, time.Minute, pecs.After)
 ```
 
 ### Tasks
 
-Tasks are one-shot systems scheduled for future execution.
+Tasks are one-shot systems scheduled for future execution. Tasks without a `*pecs.Session` field or session components are global and can be scheduled with `ScheduleGlobal` or `DispatchGlobal`.
 
 ```go
 type TeleportTask struct {
@@ -434,6 +449,17 @@ func (t *TeleportTask) Run(tx *world.Tx) {
 
 // Register task type with bundle (enables pooling optimization)
 bundle.Task(&TeleportTask{}, pecs.Default)
+
+// Global task (no Session field)
+type ServerAnnouncementTask struct {
+    pecs.Runnable
+    Manager *pecs.Manager
+    Message string
+}
+
+func (t *ServerAnnouncementTask) Run(tx *world.Tx) {
+    t.Manager.MessageAll(tx, t.Message)
+}
 ```
 
 **Scheduling Tasks:**
@@ -460,6 +486,10 @@ repeatHandle := pecs.ScheduleRepeating(sess, &TickTask{}, time.Second, 5)
 // Infinite repeating until cancelled
 repeatHandle := pecs.ScheduleRepeating(sess, &HeartbeatTask{}, time.Second, -1)
 repeatHandle.Cancel()
+
+// Global tasks (not tied to any session)
+pecs.ScheduleGlobal(mngr, &ServerAnnouncementTask{Message: "Restarting!"}, 5*time.Minute)
+pecs.DispatchGlobal(sess, &SomeGlobalTask{})
 ```
 
 **Multi-Session Tasks:**
@@ -1028,6 +1058,7 @@ type SharedProvider interface {
     Name() string
     EntityComponents() []reflect.Type
     FetchEntity(ctx context.Context, entityID string) (any, error)
+    FetchEntities(ctx context.Context, entityIDs []string) (map[string]any, error)
     SubscribeEntity(ctx context.Context, entityID string, updates chan<- any) (Subscription, error)
 }
 ```
@@ -1401,8 +1432,10 @@ pecs.Schedule(s *Session, task Runnable, delay time.Duration) *TaskHandle
 pecs.Schedule2(s1, s2 *Session, task Runnable, delay time.Duration) *TaskHandle
 pecs.ScheduleAt(s *Session, task Runnable, at time.Time) *TaskHandle
 pecs.ScheduleRepeating(s *Session, task Runnable, interval time.Duration, times int) *RepeatingTaskHandle
+pecs.ScheduleGlobal(m *Manager, task Runnable, delay time.Duration) *TaskHandle
 pecs.Dispatch(s *Session, task Runnable) *TaskHandle
 pecs.Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle
+pecs.DispatchGlobal(s *Session, task Runnable) *TaskHandle
 
 handle.Cancel()
 repeatHandle.Cancel()

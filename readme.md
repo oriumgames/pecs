@@ -411,7 +411,7 @@ bundle.Loop(&RegenLoop{}, time.Second, pecs.Default)
 // Run every tick (interval of 0)
 bundle.Loop(&TickLoop{}, 0, pecs.Before)
 
-// Global loop (no Session field) - runs once per interval
+// Global loop (no session field or component) - runs once per interval
 type WorldCleanupLoop struct {
     pecs.Runnable
     Manager *pecs.Manager
@@ -450,7 +450,7 @@ func (t *TeleportTask) Run(tx *world.Tx) {
 // Register task type with bundle (enables pooling optimization)
 bundle.Task(&TeleportTask{}, pecs.Default)
 
-// Global task (no Session field)
+// Global task (no session field or component)
 type ServerAnnouncementTask struct {
     pecs.Runnable
     Manager *pecs.Manager

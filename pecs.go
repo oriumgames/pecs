@@ -48,13 +48,16 @@
 // Systems declare dependencies via struct tags:
 //
 //	type MyHandler struct {
-//	    player.NopHandler
 //	    Session *pecs.Session
-//	    Manager *pecs.Manager      // Optional: for broadcasting, lookups
-//	    Health  *Health            // Required
+//	    Manager *pecs.Manager        // Optional: for broadcasting, lookups
+//	    Health  *Health              // Required
 //	    Shield  *Shield `pecs:"opt"` // Optional
 //	    Config  *Config `pecs:"res"` // Resource
-//	    _ pecs.Without[Spectator]  // Skip if Spectator exists
+//	    _ pecs.Without[Spectator]    // Skip if Spectator exists
+//	}
+//
+//	func (h *MyHandler) HandleHurt(ev *pecs.EventHurt) {
+//	    // Handle hurt event using ev.Damage, ev.Source, etc.
 //	}
 //
 // # Tag Reference

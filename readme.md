@@ -70,13 +70,12 @@ type Health struct {
 
 // Handlers respond to player events
 type DamageHandler struct {
-    pecs.NopHandler
     Session *pecs.Session
     Health  *Health `pecs:"mut"`
 }
 
-func (h *DamageHandler) HandleHurt(ctx *player.Context, dmg *float64, immune *bool, immunity *time.Duration, src world.DamageSource) {
-    h.Health.Current -= int(*dmg)
+func (h *DamageHandler) HandleHurt(ev *pecs.EventHurt) {
+    h.Health.Current -= int(*ev.Damage)
 }
 
 // Loops run at fixed intervals
@@ -345,42 +344,45 @@ All systems share the same dependency injection model.
 
 ### Handlers
 
-Handlers respond to Dragonfly player events. Embed `pecs.NopHandler` and override the methods you need.
+Handlers respond to events dispatched through PECS. They receive dependency injection just like loops and tasks.
 
 ```go
 type DamageHandler struct {
-    pecs.NopHandler
     Session *pecs.Session
     Health  *Health  `pecs:"mut"`
     GodMode *GodMode `pecs:"opt"`
 }
 
-func (h *DamageHandler) HandleHurt(ctx *player.Context, dmg *float64, immune *bool, immunity *time.Duration, src world.DamageSource) {
+func (h *DamageHandler) HandleHurt(ev *pecs.EventHurt) {
     if h.GodMode != nil {
-        *dmg = 0
+        *ev.Damage = 0
         return
     }
-    h.Health.Current -= int(*dmg)
+    h.Health.Current -= int(*ev.Damage)
     if h.Health.Current <= 0 {
-        ctx.Val().Kill(src)
+        ev.Ctx.Val().Kill(ev.Source)
     }
 }
 
-func (h *DamageHandler) HandleDeath(p *player.Player, src world.DamageSource, keepInv *bool) {
-    p.Message("You died!")
+func (h *DamageHandler) HandleDeath(ev *pecs.EventDeath) {
+    ev.Player.Message("You died!")
 }
 
 // Register with bundle
 bundle.Handler(&DamageHandler{})
 ```
 
-Handlers also support the special `HandleJoin` method which is called when a session is first created:
+**Built-in Events:**
 
-```go
-func (h *WelcomeHandler) HandleJoin(p *player.Player) {
-    p.Message("Welcome to the server!")
-}
-```
+PECS wraps all Dragonfly player events as pooled event types. See `event.go` for the complete list including `EventMove`, `EventHurt`, `EventDeath`, `EventChat`, `EventQuit`, and more.
+
+**Custom Events:**
+
+Handlers also support custom event types. See [Events](#events) for details on defining and dispatching your own events.
+
+**Execution:**
+
+Handlers execute synchronously in registration order. All matching handlers complete before `Dispatch()` returns.
 
 ### Loops
 
@@ -595,20 +597,19 @@ bundle.Resource(&GameConfig{
 
 // Access in any system
 type SaveHandler struct {
-    pecs.NopHandler
     Session *pecs.Session
     DB      *Database   `pecs:"res"`
     Logger  *Logger     `pecs:"res"`
     Config  *GameConfig `pecs:"res"`
 }
 
-func (h *SaveHandler) HandleQuit(p *player.Player) {
-    h.Logger.Log("Player", p.Name(), "disconnecting")
+func (h *SaveHandler) HandleQuit(ev *pecs.EventQuit) {
+    h.Logger.Log("Player", ev.Player.Name(), "disconnecting")
     h.DB.SavePlayer(h.Session)
 }
 
-func (h *SaveHandler) HandleRespawn(p *player.Player, pos *mgl64.Vec3, w **world.World) {
-    *pos = h.Config.SpawnPoint
+func (h *SaveHandler) HandleRespawn(ev *pecs.EventRespawn) {
+    *ev.Position = h.Config.SpawnPoint
 }
 ```
 
@@ -931,17 +932,16 @@ for _, war := range wars {
 
 ```go
 type PartyDisplayHandler struct {
-    pecs.NopHandler
     Session *pecs.Session
     MMData  *MatchmakingData
     Party   *PartyInfo `pecs:"shared"` // Resolved from MMData.CurrentParty
 }
 
-func (h *PartyDisplayHandler) HandleJoin(p *player.Player) {
+func (h *PartyDisplayHandler) HandleJoin(ev *pecs.EventJoin) {
     if h.Party != nil {
-        p.Message("You're in party: " + h.Party.ID)
-        p.Message("Leader: " + h.Party.LeaderID)
-        p.Message("Members: " + strconv.Itoa(len(h.Party.Members)))
+        ev.Player.Message("You're in party: " + h.Party.ID)
+        ev.Player.Message("Leader: " + h.Party.LeaderID)
+        ev.Player.Message("Members: " + strconv.Itoa(len(h.Party.Members)))
     }
 }
 ```
@@ -1126,18 +1126,17 @@ type LevelUpEvent struct {
 
 ```go
 type NotificationHandler struct {
-    pecs.NopHandler
     Session *pecs.Session
 }
 
-// Method name doesn't matter, only the signature
-func (h *NotificationHandler) OnDamage(e DamageEvent) {
+// Method names don't matter - matching is done by event type
+func (h *NotificationHandler) HandleDamage(e *DamageEvent) {
     if p, ok := h.Session.Player(nil); ok {
         p.Message(fmt.Sprintf("Took %d damage!", e.Amount))
     }
 }
 
-func (h *NotificationHandler) HandleLevelUp(e LevelUpEvent) {
+func (h *NotificationHandler) HandleLevelUp(e *LevelUpEvent) {
     if p, ok := h.Session.Player(nil); ok {
         p.Message(fmt.Sprintf("Level up! %d -> %d", e.OldLevel, e.NewLevel))
     }
@@ -1151,10 +1150,10 @@ func (h *NotificationHandler) HandleLevelUp(e LevelUpEvent) {
 sess.Dispatch(&DamageEvent{Amount: 5, Source: src})
 
 // To all sessions
-mngr.Broadcast(LevelUpEvent{NewLevel: 10, OldLevel: 9})
+mngr.Broadcast(&LevelUpEvent{NewLevel: 10, OldLevel: 9})
 
 // To all except some
-mngr.BroadcastExcept(ChatEvent{Message: "Hello"}, sender)
+mngr.BroadcastExcept(&ChatEvent{Message: "Hello"}, sender)
 sess.BroadcastExcept(event, sess) // Exclude self
 ```
 
@@ -1345,16 +1344,16 @@ func (l *MyLoop) Run(tx *world.Tx) {
 
 ```go
 // WRONG - potential deadlock
-func (h *MyHandler) HandleChat(ctx *player.Context, msg *string) {
+func (h *MyHandler) HandleChat(ev *pecs.EventChat) {
     otherSess.Exec(func(tx *world.Tx, p *player.Player) { // DEADLOCK!
-        p.Message(*msg)
+        p.Message(*ev.Message)
     })
 }
 
 // CORRECT - use existing transaction context
-func (h *MyHandler) HandleChat(ctx *player.Context, msg *string) {
-    if other, ok := otherSess.Player(ctx.Tx()); ok {
-        other.Message(*msg)
+func (h *MyHandler) HandleChat(ev *pecs.EventChat) {
+    if other, ok := otherSess.Player(ev.Ctx.Val().Tx()); ok {
+        other.Message(*ev.Message)
     }
 }
 ```
@@ -1367,7 +1366,6 @@ func (h *MyHandler) HandleChat(ctx *player.Context, msg *string) {
 
 ```go
 // Session management
-mngr.NewSession(p *player.Player) *Session
 mngr.NewSession(p *player.Player) (*Session, error)
 mngr.GetSessionByUUID(id uuid.UUID) *Session
 mngr.GetSessionByName(name string) *Session

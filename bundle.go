@@ -42,7 +42,7 @@ type Bundle struct {
 
 // handlerRegistration holds a handler registration.
 type handlerRegistration struct {
-	handler Handler
+	handler any
 }
 
 // loopRegistration holds a loop system registration.
@@ -99,8 +99,8 @@ func (b *Bundle) Command(command cmd.Command) *Bundle {
 }
 
 // Handler registers a handler for this bundle.
-// Handlers implement Handler and respond to Dragonfly events.
-func (b *Bundle) Handler(h Handler) *Bundle {
+// Handlers are structs that implement event methods like HandleHurt(*EventHurt).
+func (b *Bundle) Handler(h any) *Bundle {
 	b.handlers = append(b.handlers, handlerRegistration{
 		handler: h,
 	})

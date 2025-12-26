@@ -365,6 +365,20 @@ func (m *Manager) MessageAll(tx *world.Tx, message string) {
 	}
 }
 
+func (m *Manager) SendPopupAll(tx *world.Tx, message string) {
+	for _, s := range m.AllSessions() {
+		p, _ := s.Player(tx)
+		p.SendPopup(message)
+	}
+}
+
+func (m *Manager) SendTipAll(tx *world.Tx, message string) {
+	for _, s := range m.AllSessions() {
+		p, _ := s.Player(tx)
+		p.SendTip(message)
+	}
+}
+
 // clearAllRelationsTo removes all relations pointing to a session.
 func (m *Manager) clearAllRelationsTo(target *Session) {
 	m.sessionsMu.RLock()

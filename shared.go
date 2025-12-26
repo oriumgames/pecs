@@ -29,7 +29,10 @@ import (
 //
 //	// In a command - manual resolution
 //	func (c PartyInfoCommand) Run(src cmd.Source, out *cmd.Output, tx *world.Tx) {
-//	    p, sess := pecs.MustCommand(src)
+//	    p, sess := pecs.Command(src)
+//	    if sess == nil {
+//	        return
+//	    }
 //	    mmData := pecs.Get[MatchmakingData](sess)
 //	    if party, ok := mmData.CurrentParty.Resolve(sess.Manager()); ok {
 //	        out.Printf("Party: %s (%d members)", party.Name, len(party.Members))

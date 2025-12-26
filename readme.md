@@ -1224,13 +1224,6 @@ func (f SettingsForm) Submit(sub form.Submitter, tx *world.Tx) {
 }
 ```
 
-**Must Variants (panic if not player):**
-
-```go
-p, sess := pecs.MustCommand(src) // Panics if not player
-p, sess := pecs.MustForm(sub)    // Panics if not player
-```
-
 ---
 
 ## Bundle Organization

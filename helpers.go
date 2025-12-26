@@ -98,23 +98,3 @@ func Item(user item.User) (*player.Player, *Session) {
 	sess := getSessionFromPlayer(p)
 	return p, sess
 }
-
-// MustCommand is like Command but panics if the source is not a valid player.
-// Use this only when you're certain the source must be a player.
-func MustCommand(src cmd.Source) (*player.Player, *Session) {
-	p, sess := Command(src)
-	if p == nil || sess == nil {
-		panic("pecs: command source is not a player with a session")
-	}
-	return p, sess
-}
-
-// MustForm is like Form but panics if the submitter is not a valid player.
-// Use this only when you're certain the submitter must be a player.
-func MustForm(sub form.Submitter) (*player.Player, *Session) {
-	p, sess := Form(sub)
-	if p == nil || sess == nil {
-		panic("pecs: form submitter is not a player with a session")
-	}
-	return p, sess
-}

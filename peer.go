@@ -28,7 +28,10 @@ import (
 //
 //	// In a command - manual resolution
 //	func (c ShowFriendCommand) Run(src cmd.Source, out *cmd.Output, tx *world.Tx) {
-//	    p, sess := pecs.MustCommand(src)
+//	    p, sess := pecs.Command(src)
+//	    if sess == nil {
+//	        return
+//	    }
 //	    social := pecs.Get[SocialData](sess)
 //	    if friend, ok := social.BestFriend.Resolve(sess.Manager()); ok {
 //	        out.Printf("Best friend: %s", friend.Username)

@@ -216,6 +216,54 @@ func (h *TaskHandle) Cancel() {
 	}
 }
 
+// ScheduleGlobal schedules a global task for execution after a given delay.
+// The task runs once in the manager's default world and is not tied to any session.
+// Returns a TaskHandle that can be used to cancel the task.
+func ScheduleGlobal(m *Manager, task Runnable, delay time.Duration) *TaskHandle {
+	if m == nil {
+		return nil
+	}
+
+	taskType := reflect.TypeOf(task)
+	meta := m.getTaskMeta(taskType)
+	if meta == nil {
+		// Task type not registered - analyze on the fly. This is less optimal
+		// but allows for scheduling unregistered task types.
+		var err error
+		meta, err = analyzeSystem(taskType, nil, m.registry)
+		if err != nil {
+			return nil
+		}
+	}
+
+	var bundle *Bundle
+	for _, b := range m.bundles {
+		if b.getTaskMeta(taskType) != nil {
+			bundle = b
+			break
+		}
+	}
+
+	scheduled := &scheduledTask{
+		executeAt: time.Now().Add(delay),
+		sessions:  nil, // An empty session slice indicates a global task.
+		task:      task,
+		meta:      meta,
+		bundle:    bundle,
+	}
+
+	m.taskQueue.Push(scheduled)
+
+	return &TaskHandle{task: scheduled}
+}
+
+// DispatchGlobal schedules a global task for execution immediately.
+// The task runs once in the manager's default world and is not tied to any session.
+// Returns a TaskHandle that can be used to cancel the task.
+func DispatchGlobal(s *Session, task Runnable) *TaskHandle {
+	return ScheduleGlobal(s.manager, task, 0)
+}
+
 // Schedule schedules a task for execution after the given delay.
 // The task will only run if the session passes the bitmask check at execution time.
 // Returns a TaskHandle that can be used to cancel the task.

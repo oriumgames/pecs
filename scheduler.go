@@ -18,10 +18,15 @@ import (
 type Scheduler struct {
 	manager *Manager
 
-	// Loop management
+	loopsMu sync.RWMutex
+
+	// Loop management for session-based loops
 	loops   [stageCount][]*loopState
 	batches [stageCount][][]*loopState
-	loopsMu sync.RWMutex
+
+	// Loop management for global loops
+	globalLoops   [stageCount][]*loopState
+	globalBatches [stageCount][][]*loopState
 
 	// Worker pool
 	workers    int
@@ -42,6 +47,8 @@ type Scheduler struct {
 	// Buffer pools for reducing allocations
 	// Reusing session slices significantly reduces GC pressure in the hot path
 	sessionBufPool sync.Pool
+
+	worlds []*world.World
 }
 
 // loopState tracks the state of a single loop system.
@@ -75,7 +82,7 @@ func (l *loopState) MarkRun(now time.Time) {
 }
 
 // newScheduler creates a new scheduler.
-func newScheduler(manager *Manager) *Scheduler {
+func newScheduler(manager *Manager, ws []*world.World) *Scheduler {
 	workers := max(runtime.GOMAXPROCS(0), 1)
 
 	return &Scheduler{
@@ -91,6 +98,7 @@ func newScheduler(manager *Manager) *Scheduler {
 				return &buf
 			},
 		},
+		worlds: ws,
 	}
 }
 
@@ -159,7 +167,10 @@ func (s *Scheduler) tick(now time.Time) {
 	s.lastTick = now
 	nowMs := now.UnixMilli()
 
-	// Process component expirations first
+	// Run global lystems
+	s.runGlobalLoops(now)
+
+	// Process component expirations
 	s.manager.sessionsMu.RLock()
 	for _, sess := range s.manager.sessions {
 		sess.processExpirations(nowMs)
@@ -176,6 +187,71 @@ func (s *Scheduler) tick(now time.Time) {
 
 	// Process due tasks
 	s.processTasks(now)
+}
+
+// runGlobalLoops executes all global loops for each world known to the manager.
+func (s *Scheduler) runGlobalLoops(now time.Time) {
+	s.loopsMu.RLock()
+	batches := s.globalBatches
+	s.loopsMu.RUnlock()
+
+	// Run these systems even if there are no players online.
+	// It will run once for each world passed to `pecs.Builder.Init()`.
+	for _, w := range s.worlds {
+		for stage := range stageCount {
+			if len(batches[stage]) > 0 {
+				s.processGlobalWorldBatches(now, w, batches[stage])
+			}
+		}
+	}
+}
+
+// processGlobalWorldBatches runs the global loop batches for a specific world.
+func (s *Scheduler) processGlobalWorldBatches(now time.Time, w *world.World, batches [][]*loopState) {
+	for _, batch := range batches {
+		var runnableLoops []*loopState
+		for _, loop := range batch {
+			if loop.ShouldRun(now) {
+				runnableLoops = append(runnableLoops, loop)
+			}
+		}
+		if len(runnableLoops) == 0 {
+			continue
+		}
+
+		w.Exec(func(tx *world.Tx) {
+			var batchWG sync.WaitGroup
+			for _, loop := range runnableLoops {
+				batchWG.Add(1)
+				loop := loop
+				go func() {
+					defer batchWG.Done()
+					system := loop.meta.Pool.Get().(Runnable)
+					defer func() {
+						zeroSystem(system, loop.meta)
+						loop.meta.Pool.Put(system)
+					}()
+
+					// Global systems have no session, so pass nil for the sessions slice.
+					if injectSystem(system, nil, loop.meta, loop.bundle, s.manager) {
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									s.handleSystemPanic("global loop", loop.meta.Name, r)
+								}
+							}()
+							system.Run(tx)
+						}()
+					}
+				}()
+			}
+			batchWG.Wait()
+		})
+
+		for _, loop := range runnableLoops {
+			loop.MarkRun(now)
+		}
+	}
 }
 
 // runLoopsForStage executes all loops for a given stage in parallel batches.
@@ -342,15 +418,30 @@ func (s *Scheduler) addLoop(meta *SystemMeta, bundle *Bundle, interval time.Dura
 		nextRun:  time.Now(),
 	}
 
-	s.loops[stage] = append(s.loops[stage], state)
-	s.rebuildBatches(stage)
+	if meta.IsGlobal {
+		s.globalLoops[stage] = append(s.globalLoops[stage], state)
+		s.rebuildBatches(stage, true) // Rebuild global batches
+	} else {
+		s.loops[stage] = append(s.loops[stage], state)
+		s.rebuildBatches(stage, false) // Rebuild session batches
+	}
 }
 
 // rebuildBatches recomputes the execution batches for a stage based on conflicts.
-func (s *Scheduler) rebuildBatches(stage Stage) {
-	loops := s.loops[stage]
+func (s *Scheduler) rebuildBatches(stage Stage, global bool) {
+	var loops []*loopState
+	if global {
+		loops = s.globalLoops[stage]
+	} else {
+		loops = s.loops[stage]
+	}
+
 	if len(loops) == 0 {
-		s.batches[stage] = nil
+		if global {
+			s.globalBatches[stage] = nil
+		} else {
+			s.batches[stage] = nil
+		}
 		return
 	}
 
@@ -389,7 +480,11 @@ func (s *Scheduler) rebuildBatches(stage Stage) {
 		remaining = nextRemaining
 	}
 
-	s.batches[stage] = batches
+	if global {
+		s.globalBatches[stage] = batches
+	} else {
+		s.batches[stage] = batches
+	}
 }
 
 // processTasks processes all due tasks.
@@ -420,12 +515,20 @@ func (s *Scheduler) executeTasksForStage(tasks []*scheduledTask) {
 
 	// Group by world
 	worldTasks := make(map[*world.World][]*scheduledTask)
+	var globalTasks []*scheduledTask
+
 	for _, task := range tasks {
 		if task.cancelled.Load() {
 			continue
 		}
 
-		// Validate all sessions
+		// A task with no sessions is a global task.
+		if len(task.sessions) == 0 {
+			globalTasks = append(globalTasks, task)
+			continue
+		}
+
+		// Logic for session-based tasks remains the same.
 		allValid := true
 		var taskWorld *world.World
 		for _, sess := range task.sessions {
@@ -433,12 +536,9 @@ func (s *Scheduler) executeTasksForStage(tasks []*scheduledTask) {
 				allValid = false
 				break
 			}
-			// Get world from first session
 			if taskWorld == nil {
 				taskWorld = sess.World()
 			} else if w := sess.World(); w != taskWorld {
-				// Multi-session tasks require all sessions in same world
-				// Tasks spanning worlds are invalid and skipped
 				allValid = false
 				break
 			}
@@ -447,27 +547,38 @@ func (s *Scheduler) executeTasksForStage(tasks []*scheduledTask) {
 		if !allValid || taskWorld == nil {
 			continue
 		}
-
 		worldTasks[taskWorld] = append(worldTasks[taskWorld], task)
 	}
 
-	// Execute per world
+	// Execute session-based tasks per world.
 	var wg sync.WaitGroup
 	for w, wTasks := range worldTasks {
 		wg.Add(1)
 		w := w
 		wTasks := wTasks
-
 		job := func() {
 			defer wg.Done()
 			s.executeTasksForWorld(w, wTasks)
 		}
-
 		select {
 		case s.workerPool <- job:
 		default:
 			job()
-			wg.Done()
+		}
+	}
+
+	// Execute global tasks in the default world.
+	if len(globalTasks) > 0 && len(s.worlds) > 0 {
+		defaultWorld := s.worlds[0]
+		wg.Add(1)
+		job := func() {
+			defer wg.Done()
+			s.executeTasksForWorld(defaultWorld, globalTasks)
+		}
+		select {
+		case s.workerPool <- job:
+		default:
+			job()
 		}
 	}
 	wg.Wait()

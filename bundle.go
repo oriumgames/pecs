@@ -2,9 +2,7 @@ package pecs
 
 import (
 	"reflect"
-	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/df-mc/dragonfly/server/cmd"
 )
@@ -27,12 +25,10 @@ type Bundle struct {
 	// commands holds command registrations
 	commands []commandRegistration
 
-	// resources holds bundle-scoped resources
-	resources   map[reflect.Type]unsafe.Pointer
-	resourcesMu sync.RWMutex
+	// resources holds bundle-level resources (registered with global manager)
+	resources []any
 
-	// Injections holds bundle-level injections (in addition to global)
-	Injections []any
+	postInitHooks []func(*Manager)
 
 	// Federation providers
 	peerProviders   []peerProviderRegistration
@@ -70,9 +66,8 @@ type commandRegistration struct {
 // NewBundle creates a new bundle with the given name.
 func NewBundle(name string) *Bundle {
 	return &Bundle{
-		name:      name,
-		resources: make(map[reflect.Type]unsafe.Pointer),
-		taskMeta:  make(map[reflect.Type]*SystemMeta),
+		name:     name,
+		taskMeta: make(map[reflect.Type]*SystemMeta),
 	}
 }
 
@@ -81,25 +76,15 @@ func (b *Bundle) Name() string {
 	return b.name
 }
 
-// Injection registers a bundle-level injection.
-// These are available to all systems in this bundle.
-func (b *Bundle) Injection(inj any) *Bundle {
-	b.Injections = append(b.Injections, inj)
+// Resource registers a bundle-level resource.
+// These are available to all systems via global manager.
+func (b *Bundle) Resource(res any) *Bundle {
+	b.resources = append(b.resources, res)
 	return b
 }
 
-// Resource registers a bundle-scoped resource.
-// Resources are shared across all systems in this bundle.
-func (b *Bundle) Resource(res any) *Bundle {
-	t := reflect.TypeOf(res)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	b.resourcesMu.Lock()
-	b.resources[t] = ptrValueRaw(res)
-	b.resourcesMu.Unlock()
-
+func (b *Bundle) PostInit(hook func(*Manager)) *Bundle {
+	b.postInitHooks = append(b.postInitHooks, hook)
 	return b
 }
 
@@ -153,13 +138,6 @@ func (b *Bundle) PeerProvider(p PeerProvider, opts ...ProviderOption) *Bundle {
 func (b *Bundle) SharedProvider(p SharedProvider, opts ...ProviderOption) *Bundle {
 	b.sharedProviders = append(b.sharedProviders, sharedProviderRegistration{p, opts})
 	return b
-}
-
-// getResource retrieves a resource by type.
-func (b *Bundle) getResource(t reflect.Type) unsafe.Pointer {
-	b.resourcesMu.RLock()
-	defer b.resourcesMu.RUnlock()
-	return b.resources[t]
 }
 
 // build analyzes all systems and computes metadata.

@@ -1,16 +1,14 @@
 package pecs
 
 import (
-	"time"
-
-	"github.com/df-mc/dragonfly/server/cmd"
+	"github.com/df-mc/dragonfly/server/world"
 )
 
 // Builder configures PECS before initialization.
 // Use NewBuilder() to create a builder and chain configuration methods.
 type Builder struct {
-	bundles         []*Bundle
-	injections      []any
+	bundles         []func(*Manager) *Bundle
+	resources       []any
 	peerProviders   []peerProviderRegistration
 	sharedProviders []sharedProviderRegistration
 }
@@ -31,42 +29,14 @@ func NewBuilder() *Builder {
 }
 
 // Bundle adds a bundle to the builder.
-func (b *Builder) Bundle(bundle *Bundle) *Builder {
-	b.bundles = append(b.bundles, bundle)
+func (b *Builder) Bundle(callback func(*Manager) *Bundle) *Builder {
+	b.bundles = append(b.bundles, callback)
 	return b
 }
 
-// Injection adds a global injection available to all bundles.
-func (b *Builder) Injection(inj any) *Builder {
-	b.injections = append(b.injections, inj)
-	return b
-}
-
-// Command adds a command to an implicit default bundle.
-func (b *Builder) Command(command cmd.Command) *Builder {
-	bundle := b.getOrCreateDefaultBundle()
-	bundle.Command(command)
-	return b
-}
-
-// Handler adds a handler to an implicit default bundle.
-func (b *Builder) Handler(h Handler) *Builder {
-	bundle := b.getOrCreateDefaultBundle()
-	bundle.Handler(h)
-	return b
-}
-
-// Loop adds a loop system to an implicit default bundle.
-func (b *Builder) Loop(sys Runnable, interval time.Duration, stage Stage) *Builder {
-	bundle := b.getOrCreateDefaultBundle()
-	bundle.Loop(sys, interval, stage)
-	return b
-}
-
-// Task adds a task type to an implicit default bundle.
-func (b *Builder) Task(sys Runnable, stage Stage) *Builder {
-	bundle := b.getOrCreateDefaultBundle()
-	bundle.Task(sys, stage)
+// Resource adds a global resource available to all bundles.
+func (b *Builder) Resource(res any) *Builder {
+	b.resources = append(b.resources, res)
 	return b
 }
 
@@ -92,35 +62,29 @@ func (b *Builder) SharedProvider(p SharedProvider, opts ...ProviderOption) *Buil
 	return b
 }
 
-// getOrCreateDefaultBundle returns the default bundle, creating it if needed.
-func (b *Builder) getOrCreateDefaultBundle() *Bundle {
-	for _, bundle := range b.bundles {
-		if bundle.name == "default" {
-			return bundle
-		}
-	}
-	bundle := NewBundle("default")
-	b.bundles = append(b.bundles, bundle)
-	return bundle
-}
-
 // Init initializes PECS with the configured settings.
 // Returns the Manager instance which should be stored and used to create sessions.
 // Multiple Manager instances can coexist for running multiple isolated servers.
-func (b *Builder) Init() *Manager {
-	m := newManager()
+func (b *Builder) Init(ws ...*world.World) *Manager {
+	m := newManager(ws)
+
+	var hooks []func(*Manager)
 
 	// Add bundles
-	m.bundles = b.bundles
+	for _, f := range b.bundles {
+		bund := f(m)
+		m.bundles = append(m.bundles, bund)
+		hooks = append(hooks, bund.postInitHooks...)
+	}
 
-	// Add global injections
-	for _, inj := range b.injections {
-		m.addInjection(inj)
+	// Add global resources
+	for _, res := range b.resources {
+		m.addResource(res)
 	}
 
 	for _, bundle := range m.bundles {
-		for _, inj := range bundle.Injections {
-			m.addInjection(inj)
+		for _, res := range bundle.resources {
+			m.addResource(res)
 		}
 	}
 
@@ -148,6 +112,10 @@ func (b *Builder) Init() *Manager {
 
 	// Start the scheduler
 	m.Start()
+
+	for _, hook := range hooks {
+		hook(m)
+	}
 
 	return m
 }

@@ -16,7 +16,6 @@ const (
 	modOpt    = "opt"    // Optional (nil if missing)
 	modRel    = "rel"    // Relation traversal
 	modRes    = "res"    // Resource injection
-	modInj    = "inj"    // Global injection
 	modPeer   = "peer"   // Peer[T] resolution (remote player data)
 	modShared = "shared" // Shared[T] resolution (shared entity data)
 )
@@ -35,10 +34,8 @@ const (
 	KindRelation
 	// KindRelationSlice indicates a relation set traversal field (slice)
 	KindRelationSlice
-	// KindResource indicates a bundle resource field
+	// KindResource indicates a resource field
 	KindResource
-	// KindInjection indicates a global injection field
-	KindInjection
 	// KindPhantomWith indicates a With[T] phantom type
 	KindPhantomWith
 	// KindPhantomWithout indicates a Without[T] phantom type
@@ -78,8 +75,6 @@ func (k FieldKind) String() string {
 		return "RelationSlice"
 	case KindResource:
 		return "Resource"
-	case KindInjection:
-		return "Injection"
 	case KindPhantomWith:
 		return "PhantomWith"
 	case KindPhantomWithout:
@@ -113,7 +108,6 @@ type TagInfo struct {
 	Optional bool // pecs:"opt"
 	Relation bool // pecs:"rel"
 	Resource bool // pecs:"res"
-	Inject   bool // pecs:"inj"
 	Peer     bool // pecs:"peer"
 	Shared   bool // pecs:"shared"
 }
@@ -137,8 +131,6 @@ func parseTag(tag string) TagInfo {
 			info.Relation = true
 		case modRes:
 			info.Resource = true
-		case modInj:
-			info.Inject = true
 		case modPeer:
 			info.Peer = true
 		case modShared:

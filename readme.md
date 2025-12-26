@@ -20,7 +20,6 @@ PECS is a game architecture framework designed for [Dragonfly](https://github.co
   - [Tag Reference](#tag-reference)
   - [Phantom Types](#phantom-types)
   - [Resources](#resources)
-  - [Injections](#injections)
 - [Relations](#relations)
   - [Local Relations](#local-relations)
   - [Relation Resolution](#relation-resolution)
@@ -504,9 +503,8 @@ pecs.Schedule2(buyer, seller, &TradeTask{Item: sword, Price: 100}, time.Second)
 | `pecs:"opt"` | Optional component (nil if missing) | `Shield *Shield \`pecs:"opt"\`` |
 | `pecs:"opt,mut"` | Optional mutable component | `Buff *Buff \`pecs:"opt,mut"\`` |
 | `pecs:"rel"` | Relation traversal | `Target *Health \`pecs:"rel"\`` |
-| `pecs:"res"` | Bundle resource | `Config *Config \`pecs:"res"\`` |
-| `pecs:"res,mut"` | Mutable bundle resource | `State *State \`pecs:"res,mut"\`` |
-| `pecs:"inj"` | Global injection | `DB *Database \`pecs:"inj"\`` |
+| `pecs:"res"` | Resource | `Config *Config \`pecs:"res"\`` |
+| `pecs:"res,mut"` | Mutable resource | `State *State \`pecs:"res,mut"\`` |
 | `pecs:"peer"` | Peer data resolution | `Friend *Profile \`pecs:"peer"\`` |
 | `pecs:"shared"` | Shared entity resolution | `Party *PartyInfo \`pecs:"shared"\`` |
 
@@ -534,7 +532,7 @@ type CombatLoop struct {
 
 ### Resources
 
-Resources are bundle-scoped shared data accessible to all systems in that bundle:
+Resources are global singletons available to all systems across all bundles. Register them with either the builder or a bundle:
 
 ```go
 type GameConfig struct {
@@ -543,30 +541,6 @@ type GameConfig struct {
     SpawnPoint    mgl64.Vec3
 }
 
-// Register with bundle
-bundle.Resource(&GameConfig{
-    MaxPartySize:  5,
-    RegenInterval: time.Second,
-    SpawnPoint:    mgl64.Vec3{0, 64, 0},
-})
-
-// Access in systems
-type SpawnHandler struct {
-    pecs.NopHandler
-    Session *pecs.Session
-    Config  *GameConfig `pecs:"res"`
-}
-
-func (h *SpawnHandler) HandleRespawn(p *player.Player, pos *mgl64.Vec3, w **world.World) {
-    *pos = h.Config.SpawnPoint
-}
-```
-
-### Injections
-
-Injections are global singletons available to all systems across all bundles:
-
-```go
 type Database struct {
     conn *sql.DB
 }
@@ -575,25 +549,47 @@ type Logger struct {
     prefix string
 }
 
-// Register globally
+// Register globally with builder
 mngr := pecs.NewBuilder().
-    Injection(&Database{conn: db}).
-    Injection(&Logger{prefix: "[PECS]"}).
+    Resource(&Database{conn: db}).
+    Resource(&Logger{prefix: "[PECS]"}).
     Bundle(gameBundle).
     Init()
+
+// Or register with bundle (still globally accessible)
+bundle.Resource(&GameConfig{
+    MaxPartySize:  5,
+    RegenInterval: time.Second,
+    SpawnPoint:    mgl64.Vec3{0, 64, 0},
+})
 
 // Access in any system
 type SaveHandler struct {
     pecs.NopHandler
     Session *pecs.Session
-    DB      *Database `pecs:"inj"`
-    Logger  *Logger   `pecs:"inj"`
+    DB      *Database   `pecs:"res"`
+    Logger  *Logger     `pecs:"res"`
+    Config  *GameConfig `pecs:"res"`
 }
 
 func (h *SaveHandler) HandleQuit(p *player.Player) {
     h.Logger.Log("Player", p.Name(), "disconnecting")
     h.DB.SavePlayer(h.Session)
 }
+
+func (h *SaveHandler) HandleRespawn(p *player.Player, pos *mgl64.Vec3, w **world.World) {
+    *pos = h.Config.SpawnPoint
+}
+```
+
+**Programmatic Access:**
+
+```go
+// From session
+config := pecs.Resource[GameConfig](sess)
+
+// From manager
+db := pecs.ManagerResource[Database](mngr)
 ```
 
 ---
@@ -1238,8 +1234,8 @@ func main() {
         Command(cmd.New("pay", "Pay another player", nil, PayCommand{}))
 
     mngr := pecs.NewBuilder().
-        Injection(&Database{}).
-        Injection(&Logger{}).
+        Resource(&Database{}).
+        Resource(&Logger{}).
         Bundle(core).
         Bundle(combat).
         Bundle(party).
@@ -1248,14 +1244,6 @@ func main() {
         SharedProvider(&PartyProvider{}).
         Init()
 }
-```
-
-**Bundle-Level Injections:**
-
-```go
-// Available only to systems in this bundle
-bundle := pecs.NewBundle("combat").
-    Injection(&CombatLogger{})
 ```
 
 ---
@@ -1487,16 +1475,15 @@ pecs.MustForm(sub form.Submitter) (*player.Player, *Session)
 pecs.NewHandler(sess *Session, p *player.Player) Handler
 ```
 
-- `pecs.Injection[T](sess)`: Retrieve a global injection from a session.
-- `pecs.ManagerInjection[T](mngr)`: Retrieve a global injection from a manager.
+- `pecs.Resource[T](sess)`: Retrieve a global resource from a session.
+- `pecs.ManagerResource[T](mngr)`: Retrieve a global resource from a manager.
 
 ### Builder
 
 ```go
 pecs.NewBuilder() *Builder
 
-builder.Bundle(bundle *Bundle) *Builder
-builder.Injection(inj any) *Builder
+builder.Bundle(callback func(*Manager) *Bundle) *Builder
 builder.Resource(res any) *Builder
 builder.Handler(h Handler) *Builder
 builder.Loop(sys Runnable, interval time.Duration, stage Stage) *Builder
@@ -1513,7 +1500,6 @@ builder.Init() *Manager
 pecs.NewBundle(name string) *Bundle
 
 bundle.Name() string
-bundle.Injection(inj any) *Bundle
 bundle.Resource(res any) *Bundle
 bundle.Handler(h Handler) *Bundle
 bundle.Loop(sys Runnable, interval time.Duration, stage Stage) *Bundle

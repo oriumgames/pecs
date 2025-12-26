@@ -33,12 +33,16 @@ func ptrValueRaw(v any) unsafe.Pointer {
 // injectSystem injects dependencies into a system instance.
 // The system must have been allocated and sessions/resources must be valid.
 func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bundle, manager *Manager) bool {
-	if len(sessions) == 0 {
+	if len(sessions) == 0 && !meta.IsGlobal {
+		// A non-global system must have sessions to run on.
 		return false
 	}
 
 	systemPtr := ptrValue(system)
-	currentSession := sessions[0]
+	var currentSession *Session
+	if len(sessions) > 0 {
+		currentSession = sessions[0]
+	}
 	currentWindowIndex := 0
 
 	// Track the last component field for relation resolution
@@ -137,24 +141,14 @@ func injectSystem(system any, sessions []*Session, meta *SystemMeta, bundle *Bun
 			setSliceFromPtrs(systemPtr, field.Offset, ptrs)
 
 		case KindResource:
-			if bundle == nil {
+			if manager == nil {
 				return false
 			}
-			res := bundle.getResource(field.ComponentType)
+			res := manager.getResource(field.ComponentType)
 			if res == nil {
 				return false // Resource not found
 			}
 			setFieldPtr(systemPtr, field.Offset, res)
-
-		case KindInjection:
-			if manager == nil {
-				return false
-			}
-			inj := manager.getInjection(field.ComponentType)
-			if inj == nil {
-				return false // Injection not found
-			}
-			setFieldPtr(systemPtr, field.Offset, inj)
 
 		case KindPhantomWith, KindPhantomWithout:
 			// Phantom types don't need injection - filtering already done
@@ -282,7 +276,7 @@ func zeroSystem(system any, meta *SystemMeta) {
 		field := &meta.Fields[i]
 
 		switch field.Kind {
-		case KindSession, KindManager, KindComponent, KindRelation, KindResource, KindInjection, KindPeer, KindShared:
+		case KindSession, KindManager, KindComponent, KindRelation, KindResource, KindPeer, KindShared:
 			setFieldPtr(systemPtr, field.Offset, nil)
 
 		case KindRelationSlice, KindPeerSlice, KindSharedSlice:

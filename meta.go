@@ -34,6 +34,9 @@ type SystemMeta struct {
 	// IsMultiSession indicates this is a multi-session system
 	IsMultiSession bool
 
+	// IsGlobal indicates this is a global system that runs once, not per-session.
+	IsGlobal bool
+
 	// Pool is the sync.Pool for this system type
 	Pool *sync.Pool
 
@@ -258,6 +261,7 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 	var lastComponentFieldIndex int = -1
 	var lastComponentField *FieldMeta
 	var sessionCount int
+	var isLocal bool
 
 	for i := 0; i < systemType.NumField(); i++ {
 		field := systemType.Field(i)
@@ -272,6 +276,8 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 
 		// Check for *Session field - starts a new window
 		if field.Type == reflect.TypeFor[*Session]() {
+			isLocal = true
+
 			if sessionCount > 0 {
 				currentWindowIndex++
 			}
@@ -307,6 +313,8 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 
 		// Check for phantom types (With[T] and Without[T])
 		if isPhantomType(field.Type) {
+			isLocal = true
+
 			compType, isWithout, _ := getPhantomInfo(field.Type)
 			if compType != nil {
 				compID := registry.register(compType)
@@ -330,17 +338,6 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 			continue
 		}
 
-		// Check for global injection
-		if tag.Inject {
-			fieldMeta.Kind = KindInjection
-			fieldMeta.ComponentType = field.Type
-			if field.Type.Kind() == reflect.Ptr {
-				fieldMeta.ComponentType = field.Type.Elem()
-			}
-			meta.Fields = append(meta.Fields, fieldMeta)
-			continue
-		}
-
 		// Check for resource injection
 		if tag.Resource {
 			fieldMeta.Kind = KindResource
@@ -359,6 +356,8 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 
 		// Check for Peer[T] resolution (pecs:"peer")
 		if tag.Peer {
+			isLocal = true
+
 			compType := field.Type
 			if compType.Kind() == reflect.Slice {
 				fieldMeta.IsSlice = true
@@ -413,6 +412,8 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 
 		// Check for Shared[T] resolution (pecs:"shared")
 		if tag.Shared {
+			isLocal = true
+
 			compType := field.Type
 			if compType.Kind() == reflect.Slice {
 				fieldMeta.IsSlice = true
@@ -467,6 +468,8 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 
 		// Check for relation traversal
 		if tag.Relation {
+			isLocal = true
+
 			compType := field.Type
 			if compType.Kind() == reflect.Slice {
 				fieldMeta.IsSlice = true
@@ -554,6 +557,8 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 				continue
 			}
 
+			isLocal = true
+
 			compID := registry.register(compType)
 			fieldMeta.Kind = KindComponent
 			fieldMeta.ComponentID = compID
@@ -593,6 +598,9 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 	if currentWindow != nil {
 		currentWindow.EndFieldIndex = len(meta.Fields)
 	}
+
+	// Determine if this is a global system
+	meta.IsGlobal = !isLocal
 
 	// Determine if this is a multi-session system
 	meta.IsMultiSession = len(meta.Windows) > 1

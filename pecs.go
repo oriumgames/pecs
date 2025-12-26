@@ -64,9 +64,8 @@
 //	pecs:"opt"     Optional (nil if missing)
 //	pecs:"opt,mut" Optional mutable
 //	pecs:"rel"     Relation traversal
-//	pecs:"res"     Bundle resource
+//	pecs:"res"     Resource
 //	pecs:"res,mut" Mutable resource
-//	pecs:"inj"     Global injection
 //	pecs:"peer"    Peer[T] resolution (remote player data)
 //	pecs:"shared"  Shared[T] resolution (shared entity data)
 package pecs

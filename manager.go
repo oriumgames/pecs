@@ -29,9 +29,9 @@ type Manager struct {
 	// handlers holds all registered handler metadata
 	handlers []*handlerMeta
 
-	// injections holds global injections
-	injections   map[reflect.Type]unsafe.Pointer
-	injectionsMu sync.RWMutex
+	// resources holds global resources
+	resources   map[reflect.Type]unsafe.Pointer
+	resourcesMu sync.RWMutex
 
 	// sessions holds all active sessions
 	sessions   map[*world.EntityHandle]*Session
@@ -72,10 +72,10 @@ type Manager struct {
 }
 
 // newManager creates a new manager.
-func newManager() *Manager {
+func newManager(ws []*world.World) *Manager {
 	m := &Manager{
 		registry:         newComponentRegistry(),
-		injections:       make(map[reflect.Type]unsafe.Pointer),
+		resources:        make(map[reflect.Type]unsafe.Pointer),
 		sessions:         make(map[*world.EntityHandle]*Session),
 		sessionsByUUID:   make(map[uuid.UUID]*Session),
 		sessionsByName:   make(map[string]*Session),
@@ -84,56 +84,56 @@ func newManager() *Manager {
 		sessionsByWorld:  make(map[*world.World]map[*Session]struct{}),
 		taskQueue:        newTaskQueue(),
 	}
-	m.scheduler = newScheduler(m)
+	m.scheduler = newScheduler(m, ws)
 	m.peerCache = newPeerCache(m)
 	m.sharedCache = newSharedCache(m)
 	return m
 }
 
-// addInjection registers a global injection.
-func (m *Manager) addInjection(inj any) {
-	t := reflect.TypeOf(inj)
+// addResource registers a global resource.
+func (m *Manager) addResource(res any) {
+	t := reflect.TypeOf(res)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 
-	m.injectionsMu.Lock()
-	m.injections[t] = ptrValueRaw(inj)
-	m.injectionsMu.Unlock()
+	m.resourcesMu.Lock()
+	m.resources[t] = ptrValueRaw(res)
+	m.resourcesMu.Unlock()
 }
 
-// getInjection retrieves a global injection by type.
-func (m *Manager) getInjection(t reflect.Type) unsafe.Pointer {
-	m.injectionsMu.RLock()
-	defer m.injectionsMu.RUnlock()
+// getResource retrieves a global resource by type.
+func (m *Manager) getResource(t reflect.Type) unsafe.Pointer {
+	m.resourcesMu.RLock()
+	defer m.resourcesMu.RUnlock()
 
-	if ptr, ok := m.injections[t]; ok {
+	if ptr, ok := m.resources[t]; ok {
 		return ptr
 	}
 	return nil
 }
 
-// ManagerInjection retrieves a global injection from the manager.
-// Returns nil if the injection is not found.
-func ManagerInjection[T any](m *Manager) *T {
+// ManagerResource retrieves a global resource from the manager.
+// Returns nil if the resource is not found.
+func ManagerResource[T any](m *Manager) *T {
 	if m == nil {
 		return nil
 	}
 	t := reflect.TypeFor[T]()
-	ptr := m.getInjection(t)
+	ptr := m.getResource(t)
 	if ptr == nil {
 		return nil
 	}
 	return (*T)(ptr)
 }
 
-// Injection retrieves a global injection via the session's manager.
-// Returns nil if the session or injection is not found.
-func Injection[T any](s *Session) *T {
+// Resource retrieves a global resource via the session's manager.
+// Returns nil if the session or resource is not found.
+func Resource[T any](s *Session) *T {
 	if s == nil || s.manager == nil {
 		return nil
 	}
-	return ManagerInjection[T](s.manager)
+	return ManagerResource[T](s.manager)
 }
 
 // addSession registers a session with the manager.
@@ -354,6 +354,14 @@ func (m *Manager) BroadcastExcept(event any, exclude ...*Session) {
 		if _, excluded := excludeSet[s]; !excluded {
 			s.Dispatch(event)
 		}
+	}
+}
+
+// MessageAll sends a chat message to all online players.
+func (m *Manager) MessageAll(tx *world.Tx, message string) {
+	for _, s := range m.AllSessions() {
+		p, _ := s.Player(tx)
+		p.Message(message)
 	}
 }
 

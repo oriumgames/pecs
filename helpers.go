@@ -24,7 +24,7 @@ func getSessionFromPlayer(p *player.Player) *Session {
 //
 //	func (c MyCommand) Run(src cmd.Source, out *cmd.Output, tx *world.Tx) {
 //	    p, sess := pecs.Command(src)
-//	    if p == nil || sess == nil {
+//	    if sess == nil {
 //	        out.Error("Player-only command")
 //	        return
 //	    }
@@ -52,7 +52,7 @@ func Command(src cmd.Source) (*player.Player, *Session) {
 //
 //	func (f MyForm) Submit(sub form.Submitter, tx *world.Tx) {
 //	    p, sess := pecs.Form(sub)
-//	    if p == nil || sess == nil {
+//	    if sess == nil {
 //	        return
 //	    }
 //
@@ -79,7 +79,7 @@ func Form(sub form.Submitter) (*player.Player, *Session) {
 //
 //	func (i MyItem) Use(tx *world.Tx, user item.User, ctx *item.UseContext) bool {
 //	    p, sess := pecs.Item(user)
-//	    if p == nil || sess == nil {
+//	    if sess == nil {
 //	        return
 //	    }
 //

@@ -109,7 +109,7 @@ var _ player.Handler = (*SessionHandler)(nil)
 // Dispatch dispatches a custom event to all registered handlers that listen for it.
 // Handlers listen for events by implementing a method with the signature:
 //
-//	func (h *MyHandler) HandleMyEvent(event MyEventType)
+//	func (h *MyHandler) HandleMyEvent(ev *MyEventType)
 //
 // The method name does not matter, only the signature (one argument).
 func (s *Session) Dispatch(event any) {

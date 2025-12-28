@@ -345,7 +345,7 @@ All systems share the same dependency injection model.
 
 ### Handlers
 
-Handlers respond to events dispatched through PECS. They receive dependency injection just like loops and tasks.
+Handlers respond to events emitted through PECS. They receive dependency injection just like loops and tasks.
 
 ```go
 type DamageHandler struct {
@@ -379,11 +379,11 @@ PECS wraps all Dragonfly player events as pooled event types. See `event.go` for
 
 **Custom Events:**
 
-Handlers also support custom event types. See [Events](#events) for details on defining and dispatching your own events.
+Handlers also support custom event types. See [Events](#events) for details on defining and emitting your own events.
 
 **Execution:**
 
-Handlers execute synchronously in registration order. All matching handlers complete before `Dispatch()` returns.
+Handlers execute synchronously in registration order. All matching handlers complete before `Emit()` returns.
 
 **Global Handlers:**
 
@@ -413,7 +413,7 @@ func (h *ChatFilter) HandleChat(ev *pecs.EventChat) {
 }
 ```
 
-When using `Manager.Broadcast()`, global handlers are invoked first, then session-scoped handlers for each session. Use `Manager.BroadcastGlobal()` to invoke only global handlers.
+When using `Manager.Emit()`, global handlers are invoked first, then session-scoped handlers for each session. Use `Manager.EmitGlobal()` to invoke only global handlers.
 
 ### Loops
 
@@ -1109,9 +1109,9 @@ mngr := pecs.NewBuilder().
 // Or with options
 mngr := pecs.NewBuilder().
     PeerProvider(&StatusProvider{...}, 
-        pecs.WithFetchTimeout(2000),      // 2 second timeout
-        pecs.WithGracePeriod(60000),      // 60 second cache grace period
-        pecs.WithStaleTimeout(300000),    // 5 minute stale timeout
+        pecs.WithFetchTimeout(2*time.Second),
+        pecs.WithGracePeriod(time.Minute),
+        pecs.WithStaleTimeout(5*time.Minute),
     ).
     Init()
 ```
@@ -1138,7 +1138,7 @@ Is the target a player?
 
 ## Events
 
-Dispatch custom events to handler systems.
+Emit custom events to handler systems.
 
 **Define Events:**
 
@@ -1175,29 +1175,28 @@ func (h *NotificationHandler) HandleLevelUp(e *LevelUpEvent) {
 }
 ```
 
-**Dispatch Events:**
+**Emit Events:**
 
 ```go
 // To single session
-sess.Dispatch(&DamageEvent{Amount: 5, Source: src})
+sess.Emit(&DamageEvent{Amount: 5, Source: src})
 
 // To all sessions
-mngr.Broadcast(&LevelUpEvent{NewLevel: 10, OldLevel: 9})
+mngr.Emit(&LevelUpEvent{NewLevel: 10, OldLevel: 9})
 
 // To all except some
-mngr.BroadcastExcept(&ChatEvent{Message: "Hello"}, sender)
-sess.BroadcastExcept(event, sess) // Exclude self
+mngr.EmitExcept(&ChatEvent{Message: "Hello"}, sender)
 ```
 
 **Built-in Events:**
 
 ```go
-// Dispatched when a component is added
+// Emitted when a component is added
 type ComponentAttachEvent struct {
     ComponentType reflect.Type
 }
 
-// Dispatched when a component is removed
+// Emitted when a component is removed
 type ComponentDetachEvent struct {
     ComponentType reflect.Type
 }
@@ -1396,30 +1395,32 @@ func (h *MyHandler) HandleChat(ev *pecs.EventChat) {
 ```go
 // Session management
 mngr.NewSession(p *player.Player) (*Session, error)
+mngr.GetSession(p *player.Player) *Session
 mngr.GetSessionByUUID(id uuid.UUID) *Session
 mngr.GetSessionByName(name string) *Session
-mngr.GetSessionByID(xuid string) *Session
+mngr.GetSessionByID(id string) *Session
 mngr.GetSessionByHandle(h *world.EntityHandle) *Session
 mngr.AllSessions() []*Session
 mngr.AllSessionsInWorld(w *world.World) []*Session
 mngr.SessionCount() int
 
 // Events
-mngr.Broadcast(event any)
-mngr.BroadcastExcept(event any, exclude ...*Session)
-mngr.BroadcastGlobal(event any)
+mngr.Emit(event any)
+mngr.EmitExcept(event any, exclude ...*Session)
+mngr.EmitGlobal(event any)
 
 // Federation
 mngr.RegisterPeerProvider(p PeerProvider, opts ...ProviderOption)
 mngr.RegisterSharedProvider(p SharedProvider, opts ...ProviderOption)
 
 // Lifecycle
+mngr.Start()
 mngr.Shutdown()
 mngr.TickNumber() uint64
 
 // Spawn
-SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Session
-SpawnEntity(tx *world.Tx, cfg ActorConfig) *Session
+mngr.SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Session
+mngr.SpawnEntity(tx *world.Tx, cfg ActorConfig) *Session
 ```
 
 ### Session
@@ -1429,7 +1430,7 @@ sess.Handle() *world.EntityHandle
 sess.UUID() uuid.UUID
 sess.Name() string
 sess.XUID() string
-sess.ID() string // Same as XUID, for federation
+sess.ID() string
 sess.Player(tx *world.Tx) (*player.Player, bool)
 sess.Exec(fn func(tx *world.Tx, p *player.Player)) bool
 sess.World() *world.World
@@ -1437,20 +1438,28 @@ sess.Manager() *Manager
 sess.Closed() bool
 sess.Mask() Bitmask
 
+// Type checks
+sess.IsFake() bool
+sess.IsEntity() bool
+sess.IsActor() bool
+
 // Events
-sess.Dispatch(event any)
-sess.Broadcast(event any)
-sess.BroadcastExcept(event any, exclude ...*Session)
+sess.Emit(event any)
 ```
 
 ### Components
 
 ```go
 pecs.Add[T any](s *Session, component *T)
+pecs.AddFor[T any](s *Session, component *T, duration time.Duration)
+pecs.AddUntil[T any](s *Session, component *T, expireAt time.Time)
 pecs.Remove[T any](s *Session)
 pecs.Get[T any](s *Session) *T
 pecs.GetOrAdd[T any](s *Session, defaultVal *T) *T
 pecs.Has[T any](s *Session) bool
+pecs.ExpiresIn[T any](s *Session) time.Duration
+pecs.ExpiresAt[T any](s *Session) time.Time
+pecs.Expired[T any](s *Session) bool
 ```
 
 ### Tasks
@@ -1463,7 +1472,7 @@ pecs.ScheduleRepeating(s *Session, task Runnable, interval time.Duration, times 
 pecs.ScheduleGlobal(m *Manager, task Runnable, delay time.Duration) *TaskHandle
 pecs.Dispatch(s *Session, task Runnable) *TaskHandle
 pecs.Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle
-pecs.DispatchGlobal(m *Manager, task Runnable) *TaskHandles
+pecs.DispatchGlobal(m *Manager, task Runnable) *TaskHandle
 
 handle.Cancel()
 repeatHandle.Cancel()
@@ -1478,6 +1487,7 @@ relation.Get() *Session
 relation.Clear()
 relation.Valid() bool
 relation.Resolve() (sess *Session, comp *T, ok bool)
+relation.TargetType() reflect.Type
 
 // RelationSet[T]
 set.Add(target *Session)
@@ -1487,6 +1497,7 @@ set.Clear()
 set.Len() int
 set.All() []*Session
 set.Resolve() []Resolved[T]
+set.TargetType() reflect.Type
 ```
 
 ### Peer & Shared
@@ -1498,6 +1509,7 @@ peer.ID() string
 peer.IsSet() bool
 peer.Clear()
 peer.Resolve(m *Manager) (*T, bool)
+peer.TargetType() reflect.Type
 
 // PeerSet[T]
 peerSet.Set(playerIDs []string)
@@ -1507,6 +1519,7 @@ peerSet.IDs() []string
 peerSet.Len() int
 peerSet.Clear()
 peerSet.Resolve(m *Manager) []*T
+peerSet.TargetType() reflect.Type
 
 // Shared[T]
 shared.Set(entityID string)
@@ -1514,6 +1527,7 @@ shared.ID() string
 shared.IsSet() bool
 shared.Clear()
 shared.Resolve(m *Manager) (*T, bool)
+shared.TargetType() reflect.Type
 
 // SharedSet[T]
 sharedSet.Set(entityIDs []string)
@@ -1523,6 +1537,7 @@ sharedSet.IDs() []string
 sharedSet.Len() int
 sharedSet.Clear()
 sharedSet.Resolve(m *Manager) []*T
+sharedSet.TargetType() reflect.Type
 ```
 
 ### Helpers
@@ -1570,9 +1585,9 @@ bundle.Build() func(*Manager) *Bundle
 ### Provider Options
 
 ```go
-pecs.WithFetchTimeout(ms int64) ProviderOption   // Default: 5000ms
-pecs.WithGracePeriod(ms int64) ProviderOption    // Default: 30000ms
-pecs.WithStaleTimeout(ms int64) ProviderOption   // Default: 300000ms
+pecs.WithFetchTimeout(d time.Duration) ProviderOption   // Default: 5s
+pecs.WithGracePeriod(d time.Duration) ProviderOption    // Default: 30s
+pecs.WithStaleTimeout(d time.Duration) ProviderOption   // Default: 5m
 ```
 
 ---

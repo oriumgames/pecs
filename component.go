@@ -144,7 +144,7 @@ func Add[T any](s *Session, component *T) {
 		attachable.Attach(s)
 	}
 
-	s.Dispatch(&ComponentAttachEvent{
+	s.Emit(&ComponentAttachEvent{
 		ComponentType: t,
 	})
 }
@@ -294,7 +294,7 @@ func Remove[T any](s *Session) {
 		component.Detach(s)
 	}
 
-	s.Dispatch(&ComponentDetachEvent{
+	s.Emit(&ComponentDetachEvent{
 		ComponentType: t,
 	})
 }
@@ -388,7 +388,7 @@ func GetOrAdd[T any](s *Session, defaultVal *T) *T {
 		attachable.Attach(s)
 	}
 
-	s.Dispatch(&ComponentAttachEvent{
+	s.Emit(&ComponentAttachEvent{
 		ComponentType: t,
 	})
 

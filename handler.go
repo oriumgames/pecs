@@ -29,7 +29,7 @@ type funcval struct {
 func init() {
 	// Verify funcval layout matches Go's internal representation.
 	// If this panics on a future Go version, the internal layout changed
-	// and the unsafe event dispatch in registerHandler needs updating.
+	// and the unsafe event emission in registerHandler needs updating.
 	testAddr := uintptr(0xDEADBEEF)
 	fv := &funcval{fn: testAddr}
 
@@ -38,7 +38,7 @@ func init() {
 	recovered := *(*uintptr)(unsafe.Pointer(&fn))
 
 	if recovered != uintptr(unsafe.Pointer(fv)) {
-		panic("pecs: funcval layout assumption violated - unsafe event dispatch will not work on this Go version")
+		panic("pecs: funcval layout assumption violated - unsafe event emission will not work on this Go version")
 	}
 }
 
@@ -49,17 +49,17 @@ type emptyInterface struct {
 	data unsafe.Pointer
 }
 
-// unsafeEventDispatcher is a function that calls an event handler method
+// unsafeEventEmitter is a function that calls an event handler method
 // using unsafe pointers to avoid reflection overhead. The handler and event
 // pointers are the raw data pointers from their respective interface values.
-type unsafeEventDispatcher func(handler, event unsafe.Pointer)
+type unsafeEventEmitter func(handler, event unsafe.Pointer)
 
 // handlerMeta holds metadata and pool for a registered handler type.
 type handlerMeta struct {
 	meta   *SystemMeta
 	bundle *Bundle
-	// events is a map of event types to their unsafe, reflection-free dispatcher.
-	events map[reflect.Type]unsafeEventDispatcher
+	// events is a map of event types to their unsafe, reflection-free emitter.
+	events map[reflect.Type]unsafeEventEmitter
 }
 
 // Handlers receive events by implementing methods with a single pointer argument:
@@ -71,7 +71,7 @@ type handlerMeta struct {
 // Handlers are registered with bundles and receive dependency injection.
 
 // SessionHandler wraps a PECS session to implement Dragonfly's player.Handler.
-// It receives Dragonfly events and dispatches them as pooled PECS events.
+// It receives Dragonfly events and emits them as pooled PECS events.
 //
 // Concurrency:
 // Handlers are executed synchronously by Dragonfly (typically within the world's
@@ -94,10 +94,10 @@ func (h *SessionHandler) Session() *Session {
 // This should be passed to player.Handle().
 func NewHandler(s *Session, p *player.Player) player.Handler {
 	h := &SessionHandler{session: s}
-	// Dispatch join event
+	// Emit join event
 	ev := eventJoinPool.Get().(*EventJoin)
 	ev.Player = p
-	s.Dispatch(ev)
+	s.Emit(ev)
 	*ev = EventJoin{}
 	eventJoinPool.Put(ev)
 	return h
@@ -106,23 +106,23 @@ func NewHandler(s *Session, p *player.Player) player.Handler {
 // Compile-time check that SessionHandler implements player.Handler.
 var _ player.Handler = (*SessionHandler)(nil)
 
-// Dispatch dispatches a custom event to all registered handlers that listen for it.
+// Emit sends an event to all registered handlers that listen for it.
 // Handlers listen for events by implementing a method with the signature:
 //
 //	func (h *MyHandler) HandleMyEvent(ev *MyEventType)
 //
 // The method name does not matter, only the signature (one argument).
-func (s *Session) Dispatch(event any) {
+func (s *Session) Emit(event any) {
 	if s.manager == nil || s.closed.Load() {
 		return
 	}
 
 	eventType := reflect.TypeOf(event)
 	if eventType.Kind() != reflect.Pointer {
-		// Log warning for non-pointer events - these can't be dispatched via unsafe path.
+		// Log warning for non-pointer events - these can't be emitted via unsafe path.
 		// The registration path panics for handlers with value-type event parameters,
-		// but this can still happen if Dispatch is called with a value directly.
-		slog.Warn("pecs: dispatch ignored non-pointer event",
+		// but this can still happen if Emit is called with a value directly.
+		slog.Warn("pecs: emit ignored non-pointer event",
 			"type", eventType.String(),
 			"session", s.name)
 		return
@@ -134,7 +134,7 @@ func (s *Session) Dispatch(event any) {
 
 	for _, hm := range s.manager.handlers {
 		// Check if this handler handles this event type.
-		dispatcher, ok := hm.events[eventType]
+		emitter, ok := hm.events[eventType]
 		if !ok {
 			continue
 		}
@@ -157,8 +157,8 @@ func (s *Session) Dispatch(event any) {
 		// Extract the raw data pointer from the handler interface.
 		handlerPtr := (*emptyInterface)(unsafe.Pointer(&handler)).data
 
-		// Execute the pre-compiled unsafe dispatcher.
-		dispatcher(handlerPtr, eventPtr)
+		// Execute the pre-compiled unsafe emitter.
+		emitter(handlerPtr, eventPtr)
 
 		// Zero and return to pool.
 		zeroSystem(handler, hm.meta)
@@ -166,12 +166,12 @@ func (s *Session) Dispatch(event any) {
 	}
 }
 
-// ComponentAttachEvent is dispatched when a component is added to a session.
+// ComponentAttachEvent is emitted when a component is added to a session.
 type ComponentAttachEvent struct {
 	ComponentType reflect.Type
 }
 
-// ComponentDetachEvent is dispatched when a component is removed from a session.
+// ComponentDetachEvent is emitted when a component is removed from a session.
 type ComponentDetachEvent struct {
 	ComponentType reflect.Type
 }
@@ -182,7 +182,7 @@ func (h *SessionHandler) HandleMove(ctx *player.Context, newPos mgl64.Vec3, newR
 	ev.Ctx = ctx
 	ev.Position = newPos
 	ev.Rotation = newRot
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventMove{}
 	eventMovePool.Put(ev)
 }
@@ -191,7 +191,7 @@ func (h *SessionHandler) HandleMove(ctx *player.Context, newPos mgl64.Vec3, newR
 func (h *SessionHandler) HandleJump(p *player.Player) {
 	ev := eventJumpPool.Get().(*EventJump)
 	ev.Player = p
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventJump{}
 	eventJumpPool.Put(ev)
 }
@@ -201,7 +201,7 @@ func (h *SessionHandler) HandleTeleport(ctx *player.Context, pos mgl64.Vec3) {
 	ev := eventTeleportPool.Get().(*EventTeleport)
 	ev.Ctx = ctx
 	ev.Position = pos
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventTeleport{}
 	eventTeleportPool.Put(ev)
 }
@@ -216,7 +216,7 @@ func (h *SessionHandler) HandleChangeWorld(p *player.Player, before, after *worl
 	ev.Player = p
 	ev.Before = before
 	ev.After = after
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventChangeWorld{}
 	eventChangeWorldPool.Put(ev)
 }
@@ -226,7 +226,7 @@ func (h *SessionHandler) HandleToggleSprint(ctx *player.Context, after bool) {
 	ev := eventToggleSprintPool.Get().(*EventToggleSprint)
 	ev.Ctx = ctx
 	ev.After = after
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventToggleSprint{}
 	eventToggleSprintPool.Put(ev)
 }
@@ -236,7 +236,7 @@ func (h *SessionHandler) HandleToggleSneak(ctx *player.Context, after bool) {
 	ev := eventToggleSneakPool.Get().(*EventToggleSneak)
 	ev.Ctx = ctx
 	ev.After = after
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventToggleSneak{}
 	eventToggleSneakPool.Put(ev)
 }
@@ -246,7 +246,7 @@ func (h *SessionHandler) HandleChat(ctx *player.Context, message *string) {
 	ev := eventChatPool.Get().(*EventChat)
 	ev.Ctx = ctx
 	ev.Message = message
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventChat{}
 	eventChatPool.Put(ev)
 }
@@ -257,7 +257,7 @@ func (h *SessionHandler) HandleFoodLoss(ctx *player.Context, from int, to *int) 
 	ev.Ctx = ctx
 	ev.From = from
 	ev.To = to
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventFoodLoss{}
 	eventFoodLossPool.Put(ev)
 }
@@ -268,7 +268,7 @@ func (h *SessionHandler) HandleHeal(ctx *player.Context, health *float64, src wo
 	ev.Ctx = ctx
 	ev.Health = health
 	ev.Source = src
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventHeal{}
 	eventHealPool.Put(ev)
 }
@@ -281,7 +281,7 @@ func (h *SessionHandler) HandleHurt(ctx *player.Context, damage *float64, immune
 	ev.Immune = immune
 	ev.Immunity = attackImmunity
 	ev.Source = src
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventHurt{}
 	eventHurtPool.Put(ev)
 }
@@ -292,7 +292,7 @@ func (h *SessionHandler) HandleDeath(p *player.Player, src world.DamageSource, k
 	ev.Player = p
 	ev.Source = src
 	ev.KeepInventory = keepInv
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventDeath{}
 	eventDeathPool.Put(ev)
 }
@@ -303,7 +303,7 @@ func (h *SessionHandler) HandleRespawn(p *player.Player, pos *mgl64.Vec3, w **wo
 	ev.Player = p
 	ev.Position = pos
 	ev.World = w
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventRespawn{}
 	eventRespawnPool.Put(ev)
 }
@@ -313,7 +313,7 @@ func (h *SessionHandler) HandleSkinChange(ctx *player.Context, sk *skin.Skin) {
 	ev := eventSkinChangePool.Get().(*EventSkinChange)
 	ev.Ctx = ctx
 	ev.Skin = sk
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventSkinChange{}
 	eventSkinChangePool.Put(ev)
 }
@@ -323,7 +323,7 @@ func (h *SessionHandler) HandleFireExtinguish(ctx *player.Context, pos cube.Pos)
 	ev := eventFireExtinguishPool.Get().(*EventFireExtinguish)
 	ev.Ctx = ctx
 	ev.Position = pos
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventFireExtinguish{}
 	eventFireExtinguishPool.Put(ev)
 }
@@ -333,7 +333,7 @@ func (h *SessionHandler) HandleStartBreak(ctx *player.Context, pos cube.Pos) {
 	ev := eventStartBreakPool.Get().(*EventStartBreak)
 	ev.Ctx = ctx
 	ev.Position = pos
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventStartBreak{}
 	eventStartBreakPool.Put(ev)
 }
@@ -345,7 +345,7 @@ func (h *SessionHandler) HandleBlockBreak(ctx *player.Context, pos cube.Pos, dro
 	ev.Position = pos
 	ev.Drops = drops
 	ev.Experience = xp
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventBlockBreak{}
 	eventBlockBreakPool.Put(ev)
 }
@@ -356,7 +356,7 @@ func (h *SessionHandler) HandleBlockPlace(ctx *player.Context, pos cube.Pos, b w
 	ev.Ctx = ctx
 	ev.Position = pos
 	ev.Block = b
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventBlockPlace{}
 	eventBlockPlacePool.Put(ev)
 }
@@ -367,7 +367,7 @@ func (h *SessionHandler) HandleBlockPick(ctx *player.Context, pos cube.Pos, b wo
 	ev.Ctx = ctx
 	ev.Position = pos
 	ev.Block = b
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventBlockPick{}
 	eventBlockPickPool.Put(ev)
 }
@@ -376,7 +376,7 @@ func (h *SessionHandler) HandleBlockPick(ctx *player.Context, pos cube.Pos, b wo
 func (h *SessionHandler) HandleItemUse(ctx *player.Context) {
 	ev := eventItemUsePool.Get().(*EventItemUse)
 	ev.Ctx = ctx
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemUse{}
 	eventItemUsePool.Put(ev)
 }
@@ -388,7 +388,7 @@ func (h *SessionHandler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos,
 	ev.Position = pos
 	ev.Face = face
 	ev.ClickPos = clickPos
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemUseOnBlock{}
 	eventItemUseOnBlockPool.Put(ev)
 }
@@ -398,7 +398,7 @@ func (h *SessionHandler) HandleItemUseOnEntity(ctx *player.Context, e world.Enti
 	ev := eventItemUseOnEntityPool.Get().(*EventItemUseOnEntity)
 	ev.Ctx = ctx
 	ev.Entity = e
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemUseOnEntity{}
 	eventItemUseOnEntityPool.Put(ev)
 }
@@ -409,7 +409,7 @@ func (h *SessionHandler) HandleItemRelease(ctx *player.Context, it item.Stack, d
 	ev.Ctx = ctx
 	ev.Item = it
 	ev.Duration = dur
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemRelease{}
 	eventItemReleasePool.Put(ev)
 }
@@ -419,7 +419,7 @@ func (h *SessionHandler) HandleItemConsume(ctx *player.Context, it item.Stack) {
 	ev := eventItemConsumePool.Get().(*EventItemConsume)
 	ev.Ctx = ctx
 	ev.Item = it
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemConsume{}
 	eventItemConsumePool.Put(ev)
 }
@@ -432,7 +432,7 @@ func (h *SessionHandler) HandleAttackEntity(ctx *player.Context, e world.Entity,
 	ev.Force = force
 	ev.Height = height
 	ev.Critical = critical
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventAttackEntity{}
 	eventAttackEntityPool.Put(ev)
 }
@@ -442,7 +442,7 @@ func (h *SessionHandler) HandleExperienceGain(ctx *player.Context, amount *int) 
 	ev := eventExperienceGainPool.Get().(*EventExperienceGain)
 	ev.Ctx = ctx
 	ev.Amount = amount
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventExperienceGain{}
 	eventExperienceGainPool.Put(ev)
 }
@@ -451,7 +451,7 @@ func (h *SessionHandler) HandleExperienceGain(ctx *player.Context, amount *int) 
 func (h *SessionHandler) HandlePunchAir(ctx *player.Context) {
 	ev := eventPunchAirPool.Get().(*EventPunchAir)
 	ev.Ctx = ctx
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventPunchAir{}
 	eventPunchAirPool.Put(ev)
 }
@@ -464,7 +464,7 @@ func (h *SessionHandler) HandleSignEdit(ctx *player.Context, pos cube.Pos, front
 	ev.FrontSide = frontSide
 	ev.OldText = oldText
 	ev.NewText = newText
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventSignEdit{}
 	eventSignEditPool.Put(ev)
 }
@@ -476,7 +476,7 @@ func (h *SessionHandler) HandleLecternPageTurn(ctx *player.Context, pos cube.Pos
 	ev.Position = pos
 	ev.OldPage = oldPage
 	ev.NewPage = newPage
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventLecternPageTurn{}
 	eventLecternPageTurnPool.Put(ev)
 }
@@ -487,7 +487,7 @@ func (h *SessionHandler) HandleItemDamage(ctx *player.Context, it item.Stack, da
 	ev.Ctx = ctx
 	ev.Item = it
 	ev.Damage = damage
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemDamage{}
 	eventItemDamagePool.Put(ev)
 }
@@ -497,7 +497,7 @@ func (h *SessionHandler) HandleItemPickup(ctx *player.Context, it *item.Stack) {
 	ev := eventItemPickupPool.Get().(*EventItemPickup)
 	ev.Ctx = ctx
 	ev.Item = it
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemPickup{}
 	eventItemPickupPool.Put(ev)
 }
@@ -508,7 +508,7 @@ func (h *SessionHandler) HandleHeldSlotChange(ctx *player.Context, from, to int)
 	ev.Ctx = ctx
 	ev.From = from
 	ev.To = to
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventHeldSlotChange{}
 	eventHeldSlotChangePool.Put(ev)
 }
@@ -518,7 +518,7 @@ func (h *SessionHandler) HandleItemDrop(ctx *player.Context, it item.Stack) {
 	ev := eventItemDropPool.Get().(*EventItemDrop)
 	ev.Ctx = ctx
 	ev.Item = it
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventItemDrop{}
 	eventItemDropPool.Put(ev)
 }
@@ -528,7 +528,7 @@ func (h *SessionHandler) HandleTransfer(ctx *player.Context, addr *net.UDPAddr) 
 	ev := eventTransferPool.Get().(*EventTransfer)
 	ev.Ctx = ctx
 	ev.Address = addr
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventTransfer{}
 	eventTransferPool.Put(ev)
 }
@@ -539,7 +539,7 @@ func (h *SessionHandler) HandleCommandExecution(ctx *player.Context, command cmd
 	ev.Ctx = ctx
 	ev.Command = command
 	ev.Args = args
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventCommandExecution{}
 	eventCommandExecutionPool.Put(ev)
 }
@@ -548,7 +548,7 @@ func (h *SessionHandler) HandleCommandExecution(ctx *player.Context, command cmd
 func (h *SessionHandler) HandleQuit(p *player.Player) {
 	ev := eventQuitPool.Get().(*EventQuit)
 	ev.Player = p
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventQuit{}
 	eventQuitPool.Put(ev)
 	h.session.close()
@@ -559,7 +559,7 @@ func (h *SessionHandler) HandleDiagnostics(p *player.Player, d session.Diagnosti
 	ev := eventDiagnosticsPool.Get().(*EventDiagnostics)
 	ev.Player = p
 	ev.Diagnostics = d
-	h.session.Dispatch(ev)
+	h.session.Emit(ev)
 	*ev = EventDiagnostics{}
 	eventDiagnosticsPool.Put(ev)
 }
@@ -580,8 +580,8 @@ func (m *Manager) registerHandler(h any, bundle *Bundle) error {
 		},
 	}
 
-	// Scan for event methods and create optimized, unsafe dispatchers.
-	events := make(map[reflect.Type]unsafeEventDispatcher)
+	// Scan for event methods and create optimized, unsafe emitters.
+	events := make(map[reflect.Type]unsafeEventEmitter)
 	for i := 0; i < t.NumMethod(); i++ {
 		method := t.Method(i)
 		if method.Type.NumIn() != 2 { // Receiver + 1 argument
@@ -597,14 +597,14 @@ func (m *Manager) registerHandler(h any, bundle *Bundle) error {
 		if eventType.Kind() != reflect.Pointer {
 			// We panic here to enforce the use of pointer types for events at startup.
 			// This makes the performance characteristics clear to the developer.
-			panic(fmt.Errorf("pecs: event handler %v method %v uses value type %v for event. only pointer types are supported for unsafe dispatch", t, method.Name, eventType))
+			panic(fmt.Errorf("pecs: event handler %v method %v uses value type %v for event. only pointer types are supported for unsafe emission", t, method.Name, eventType))
 		}
 
 		// Get the method's code address
 		capturedFptr := method.Func.Pointer()
 
 		// Create a persistent funcval struct containing the code address.
-		// This must be heap-allocated and persist for the lifetime of the dispatcher.
+		// This must be heap-allocated and persist for the lifetime of the emitter.
 		fv := &funcval{fn: capturedFptr}
 
 		// Reinterpret the *funcval as a callable function value.

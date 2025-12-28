@@ -164,22 +164,6 @@ func (s *Session) Manager() *Manager {
 	return s.manager
 }
 
-// Broadcast dispatches an event to all active sessions.
-// This is a convenience method that delegates to Manager.Broadcast.
-func (s *Session) Broadcast(event any) {
-	if s.manager != nil {
-		s.manager.Broadcast(event)
-	}
-}
-
-// BroadcastExcept dispatches an event to all active sessions except the specified ones.
-// This is a convenience method that delegates to Manager.BroadcastExcept.
-func (s *Session) BroadcastExcept(event any, exclude ...*Session) {
-	if s.manager != nil {
-		s.manager.BroadcastExcept(event, exclude...)
-	}
-}
-
 // Closed returns true if the session has been closed.
 func (s *Session) Closed() bool {
 	return s.closed.Load()
@@ -422,7 +406,7 @@ func (s *Session) removeComponentByID(id ComponentID) {
 		detachable.Detach(s)
 	}
 
-	s.Dispatch(&ComponentDetachEvent{
+	s.Emit(&ComponentDetachEvent{
 		ComponentType: t,
 	})
 }

@@ -331,31 +331,31 @@ func (m *Manager) SessionCount() int {
 	return len(m.sessions)
 }
 
-// Broadcast dispatches an event to all active sessions.
+// Emit sends an event to all active sessions.
 // Global handlers are invoked first, then session-scoped handlers for each session.
-func (m *Manager) Broadcast(event any) {
-	m.dispatchGlobalHandlers(event)
+func (m *Manager) Emit(event any) {
+	m.emitToGlobalHandlers(event)
 
 	sessions := m.AllSessions()
 	for _, s := range sessions {
-		s.Dispatch(event)
+		s.Emit(event)
 	}
 }
 
-// BroadcastGlobal dispatches an event to global handlers only.
-func (m *Manager) BroadcastGlobal(event any) {
-	m.dispatchGlobalHandlers(event)
+// EmitGlobal sends an event to global handlers only.
+func (m *Manager) EmitGlobal(event any) {
+	m.emitToGlobalHandlers(event)
 }
 
-// BroadcastExcept dispatches an event to all active sessions except the specified ones.
+// EmitExcept sends an event to all active sessions except the specified ones.
 // Global handlers are invoked first, then session-scoped handlers for each non-excluded session.
-func (m *Manager) BroadcastExcept(event any, exclude ...*Session) {
-	m.dispatchGlobalHandlers(event)
+func (m *Manager) EmitExcept(event any, exclude ...*Session) {
+	m.emitToGlobalHandlers(event)
 
 	if len(exclude) == 0 {
 		sessions := m.AllSessions()
 		for _, s := range sessions {
-			s.Dispatch(event)
+			s.Emit(event)
 		}
 		return
 	}
@@ -369,20 +369,20 @@ func (m *Manager) BroadcastExcept(event any, exclude ...*Session) {
 	sessions := m.AllSessions()
 	for _, s := range sessions {
 		if _, excluded := excludeSet[s]; !excluded {
-			s.Dispatch(event)
+			s.Emit(event)
 		}
 	}
 }
 
-// dispatchGlobalHandlers dispatches an event to all global handlers.
-func (m *Manager) dispatchGlobalHandlers(event any) {
+// emitToGlobalHandlers emits an event to all global handlers.
+func (m *Manager) emitToGlobalHandlers(event any) {
 	if len(m.globalHandlers) == 0 {
 		return
 	}
 
 	eventType := reflect.TypeOf(event)
 	if eventType.Kind() != reflect.Pointer {
-		slog.Warn("pecs: global dispatch ignored non-pointer event",
+		slog.Warn("pecs: global emit ignored non-pointer event",
 			"type", eventType.String())
 		return
 	}
@@ -390,7 +390,7 @@ func (m *Manager) dispatchGlobalHandlers(event any) {
 	eventPtr := (*emptyInterface)(unsafe.Pointer(&event)).data
 
 	for _, hm := range m.globalHandlers {
-		dispatcher, ok := hm.events[eventType]
+		emitter, ok := hm.events[eventType]
 		if !ok {
 			continue
 		}
@@ -404,7 +404,7 @@ func (m *Manager) dispatchGlobalHandlers(event any) {
 		}
 
 		handlerPtr := (*emptyInterface)(unsafe.Pointer(&handler)).data
-		dispatcher(handlerPtr, eventPtr)
+		emitter(handlerPtr, eventPtr)
 
 		zeroSystem(handler, hm.meta)
 		hm.meta.Pool.Put(handler)

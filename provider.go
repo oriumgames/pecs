@@ -3,6 +3,7 @@ package pecs
 import (
 	"context"
 	"reflect"
+	"time"
 )
 
 // Provider is the base interface for all data providers.
@@ -80,17 +81,17 @@ type Subscription interface {
 type ProviderOptions struct {
 	// FetchTimeout is the maximum time to wait for Fetch calls.
 	// Default: 5 seconds.
-	FetchTimeout int64
+	FetchTimeout time.Duration
 
 	// GracePeriod is how long to keep cached data after the last reference is released.
 	// This prevents thrashing when players rapidly reference/dereference the same target.
 	// Default: 30 seconds.
-	GracePeriod int64
+	GracePeriod time.Duration
 
 	// StaleTimeout defines when cached data is considered too old to use.
 	// If a subscription fails and data is older than this, resolution fails.
 	// Default: 5 minutes.
-	StaleTimeout int64
+	StaleTimeout time.Duration
 
 	// Required indicates this provider must succeed for session creation.
 	// If true, NewSession returns an error if this provider fails.
@@ -102,33 +103,33 @@ type ProviderOptions struct {
 // defaultProviderOptions returns sensible defaults.
 func defaultProviderOptions() ProviderOptions {
 	return ProviderOptions{
-		FetchTimeout: 5_000,      // 5 seconds
-		GracePeriod:  30_000,     // 30 seconds
-		StaleTimeout: 5 * 60_000, // 5 minutes
+		FetchTimeout: 5 * time.Second,
+		GracePeriod:  30 * time.Second,
+		StaleTimeout: 5 * time.Minute,
 	}
 }
 
 // ProviderOption configures a provider.
 type ProviderOption func(*ProviderOptions)
 
-// WithFetchTimeout sets the fetch timeout in milliseconds.
-func WithFetchTimeout(ms int64) ProviderOption {
+// WithFetchTimeout sets the fetch timeout.
+func WithFetchTimeout(d time.Duration) ProviderOption {
 	return func(o *ProviderOptions) {
-		o.FetchTimeout = ms
+		o.FetchTimeout = d
 	}
 }
 
-// WithGracePeriod sets the grace period in milliseconds.
-func WithGracePeriod(ms int64) ProviderOption {
+// WithGracePeriod sets the grace period.
+func WithGracePeriod(d time.Duration) ProviderOption {
 	return func(o *ProviderOptions) {
-		o.GracePeriod = ms
+		o.GracePeriod = d
 	}
 }
 
-// WithStaleTimeout sets the stale timeout in milliseconds.
-func WithStaleTimeout(ms int64) ProviderOption {
+// WithStaleTimeout sets the stale timeout.
+func WithStaleTimeout(d time.Duration) ProviderOption {
 	return func(o *ProviderOptions) {
-		o.StaleTimeout = ms
+		o.StaleTimeout = d
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 // Event types wrap Dragonfly handler parameters.
 // Using PECS events decouples your handlers from Dragonfly's signature changes.
 
-// EventMove is dispatched when a player moves.
+// EventMove is emitted when a player moves.
 type EventMove struct {
 	Ctx      *player.Context
 	Position mgl64.Vec3
@@ -27,12 +27,12 @@ type EventMove struct {
 
 func (e *EventMove) Cancel() { e.Ctx.Cancel() }
 
-// EventJump is dispatched when a player jumps.
+// EventJump is emitted when a player jumps.
 type EventJump struct {
 	Player *player.Player
 }
 
-// EventTeleport is dispatched when a player is teleported.
+// EventTeleport is emitted when a player is teleported.
 type EventTeleport struct {
 	Ctx      *player.Context
 	Position mgl64.Vec3
@@ -40,14 +40,14 @@ type EventTeleport struct {
 
 func (e *EventTeleport) Cancel() { e.Ctx.Cancel() }
 
-// EventChangeWorld is dispatched when a player changes worlds.
+// EventChangeWorld is emitted when a player changes worlds.
 type EventChangeWorld struct {
 	Player *player.Player
 	Before *world.World
 	After  *world.World
 }
 
-// EventToggleSprint is dispatched when a player toggles sprinting.
+// EventToggleSprint is emitted when a player toggles sprinting.
 type EventToggleSprint struct {
 	Ctx   *player.Context
 	After bool
@@ -55,7 +55,7 @@ type EventToggleSprint struct {
 
 func (e *EventToggleSprint) Cancel() { e.Ctx.Cancel() }
 
-// EventToggleSneak is dispatched when a player toggles sneaking.
+// EventToggleSneak is emitted when a player toggles sneaking.
 type EventToggleSneak struct {
 	Ctx   *player.Context
 	After bool
@@ -63,7 +63,7 @@ type EventToggleSneak struct {
 
 func (e *EventToggleSneak) Cancel() { e.Ctx.Cancel() }
 
-// EventChat is dispatched when a player sends a chat message.
+// EventChat is emitted when a player sends a chat message.
 type EventChat struct {
 	Ctx     *player.Context
 	Message *string
@@ -71,7 +71,7 @@ type EventChat struct {
 
 func (e *EventChat) Cancel() { e.Ctx.Cancel() }
 
-// EventFoodLoss is dispatched when a player loses food.
+// EventFoodLoss is emitted when a player loses food.
 type EventFoodLoss struct {
 	Ctx  *player.Context
 	From int
@@ -80,7 +80,7 @@ type EventFoodLoss struct {
 
 func (e *EventFoodLoss) Cancel() { e.Ctx.Cancel() }
 
-// EventHeal is dispatched when a player is healed.
+// EventHeal is emitted when a player is healed.
 type EventHeal struct {
 	Ctx    *player.Context
 	Health *float64
@@ -89,7 +89,7 @@ type EventHeal struct {
 
 func (e *EventHeal) Cancel() { e.Ctx.Cancel() }
 
-// EventHurt is dispatched when a player is hurt.
+// EventHurt is emitted when a player is hurt.
 type EventHurt struct {
 	Ctx      *player.Context
 	Damage   *float64
@@ -100,21 +100,21 @@ type EventHurt struct {
 
 func (e *EventHurt) Cancel() { e.Ctx.Cancel() }
 
-// EventDeath is dispatched when a player dies.
+// EventDeath is emitted when a player dies.
 type EventDeath struct {
 	Player        *player.Player
 	Source        world.DamageSource
 	KeepInventory *bool
 }
 
-// EventRespawn is dispatched when a player respawns.
+// EventRespawn is emitted when a player respawns.
 type EventRespawn struct {
 	Player   *player.Player
 	Position *mgl64.Vec3
 	World    **world.World
 }
 
-// EventSkinChange is dispatched when a player changes their skin.
+// EventSkinChange is emitted when a player changes their skin.
 type EventSkinChange struct {
 	Ctx  *player.Context
 	Skin *skin.Skin
@@ -122,7 +122,7 @@ type EventSkinChange struct {
 
 func (e *EventSkinChange) Cancel() { e.Ctx.Cancel() }
 
-// EventFireExtinguish is dispatched when a player extinguishes fire.
+// EventFireExtinguish is emitted when a player extinguishes fire.
 type EventFireExtinguish struct {
 	Ctx      *player.Context
 	Position cube.Pos
@@ -130,7 +130,7 @@ type EventFireExtinguish struct {
 
 func (e *EventFireExtinguish) Cancel() { e.Ctx.Cancel() }
 
-// EventStartBreak is dispatched when a player starts breaking a block.
+// EventStartBreak is emitted when a player starts breaking a block.
 type EventStartBreak struct {
 	Ctx      *player.Context
 	Position cube.Pos
@@ -138,7 +138,7 @@ type EventStartBreak struct {
 
 func (e *EventStartBreak) Cancel() { e.Ctx.Cancel() }
 
-// EventBlockBreak is dispatched when a player breaks a block.
+// EventBlockBreak is emitted when a player breaks a block.
 type EventBlockBreak struct {
 	Ctx        *player.Context
 	Position   cube.Pos
@@ -148,7 +148,7 @@ type EventBlockBreak struct {
 
 func (e *EventBlockBreak) Cancel() { e.Ctx.Cancel() }
 
-// EventBlockPlace is dispatched when a player places a block.
+// EventBlockPlace is emitted when a player places a block.
 type EventBlockPlace struct {
 	Ctx      *player.Context
 	Position cube.Pos
@@ -157,7 +157,7 @@ type EventBlockPlace struct {
 
 func (e *EventBlockPlace) Cancel() { e.Ctx.Cancel() }
 
-// EventBlockPick is dispatched when a player picks a block.
+// EventBlockPick is emitted when a player picks a block.
 type EventBlockPick struct {
 	Ctx      *player.Context
 	Position cube.Pos
@@ -166,14 +166,14 @@ type EventBlockPick struct {
 
 func (e *EventBlockPick) Cancel() { e.Ctx.Cancel() }
 
-// EventItemUse is dispatched when a player uses an item.
+// EventItemUse is emitted when a player uses an item.
 type EventItemUse struct {
 	Ctx *player.Context
 }
 
 func (e *EventItemUse) Cancel() { e.Ctx.Cancel() }
 
-// EventItemUseOnBlock is dispatched when a player uses an item on a block.
+// EventItemUseOnBlock is emitted when a player uses an item on a block.
 type EventItemUseOnBlock struct {
 	Ctx      *player.Context
 	Position cube.Pos
@@ -183,7 +183,7 @@ type EventItemUseOnBlock struct {
 
 func (e *EventItemUseOnBlock) Cancel() { e.Ctx.Cancel() }
 
-// EventItemUseOnEntity is dispatched when a player uses an item on an entity.
+// EventItemUseOnEntity is emitted when a player uses an item on an entity.
 type EventItemUseOnEntity struct {
 	Ctx    *player.Context
 	Entity world.Entity
@@ -191,7 +191,7 @@ type EventItemUseOnEntity struct {
 
 func (e *EventItemUseOnEntity) Cancel() { e.Ctx.Cancel() }
 
-// EventItemRelease is dispatched when a player releases a charged item.
+// EventItemRelease is emitted when a player releases a charged item.
 type EventItemRelease struct {
 	Ctx      *player.Context
 	Item     item.Stack
@@ -200,7 +200,7 @@ type EventItemRelease struct {
 
 func (e *EventItemRelease) Cancel() { e.Ctx.Cancel() }
 
-// EventItemConsume is dispatched when a player consumes an item.
+// EventItemConsume is emitted when a player consumes an item.
 type EventItemConsume struct {
 	Ctx  *player.Context
 	Item item.Stack
@@ -208,7 +208,7 @@ type EventItemConsume struct {
 
 func (e *EventItemConsume) Cancel() { e.Ctx.Cancel() }
 
-// EventAttackEntity is dispatched when a player attacks an entity.
+// EventAttackEntity is emitted when a player attacks an entity.
 type EventAttackEntity struct {
 	Ctx      *player.Context
 	Entity   world.Entity
@@ -219,7 +219,7 @@ type EventAttackEntity struct {
 
 func (e *EventAttackEntity) Cancel() { e.Ctx.Cancel() }
 
-// EventExperienceGain is dispatched when a player gains experience.
+// EventExperienceGain is emitted when a player gains experience.
 type EventExperienceGain struct {
 	Ctx    *player.Context
 	Amount *int
@@ -227,14 +227,14 @@ type EventExperienceGain struct {
 
 func (e *EventExperienceGain) Cancel() { e.Ctx.Cancel() }
 
-// EventPunchAir is dispatched when a player punches air.
+// EventPunchAir is emitted when a player punches air.
 type EventPunchAir struct {
 	Ctx *player.Context
 }
 
 func (e *EventPunchAir) Cancel() { e.Ctx.Cancel() }
 
-// EventSignEdit is dispatched when a player edits a sign.
+// EventSignEdit is emitted when a player edits a sign.
 type EventSignEdit struct {
 	Ctx       *player.Context
 	Position  cube.Pos
@@ -245,7 +245,7 @@ type EventSignEdit struct {
 
 func (e *EventSignEdit) Cancel() { e.Ctx.Cancel() }
 
-// EventLecternPageTurn is dispatched when a player turns a lectern page.
+// EventLecternPageTurn is emitted when a player turns a lectern page.
 type EventLecternPageTurn struct {
 	Ctx      *player.Context
 	Position cube.Pos
@@ -255,7 +255,7 @@ type EventLecternPageTurn struct {
 
 func (e *EventLecternPageTurn) Cancel() { e.Ctx.Cancel() }
 
-// EventItemDamage is dispatched when an item takes damage.
+// EventItemDamage is emitted when an item takes damage.
 type EventItemDamage struct {
 	Ctx    *player.Context
 	Item   item.Stack
@@ -264,7 +264,7 @@ type EventItemDamage struct {
 
 func (e *EventItemDamage) Cancel() { e.Ctx.Cancel() }
 
-// EventItemPickup is dispatched when a player picks up an item.
+// EventItemPickup is emitted when a player picks up an item.
 type EventItemPickup struct {
 	Ctx  *player.Context
 	Item *item.Stack
@@ -272,7 +272,7 @@ type EventItemPickup struct {
 
 func (e *EventItemPickup) Cancel() { e.Ctx.Cancel() }
 
-// EventHeldSlotChange is dispatched when a player changes their held slot.
+// EventHeldSlotChange is emitted when a player changes their held slot.
 type EventHeldSlotChange struct {
 	Ctx  *player.Context
 	From int
@@ -281,7 +281,7 @@ type EventHeldSlotChange struct {
 
 func (e *EventHeldSlotChange) Cancel() { e.Ctx.Cancel() }
 
-// EventItemDrop is dispatched when a player drops an item.
+// EventItemDrop is emitted when a player drops an item.
 type EventItemDrop struct {
 	Ctx  *player.Context
 	Item item.Stack
@@ -289,7 +289,7 @@ type EventItemDrop struct {
 
 func (e *EventItemDrop) Cancel() { e.Ctx.Cancel() }
 
-// EventTransfer is dispatched when a player is transferred to another server.
+// EventTransfer is emitted when a player is transferred to another server.
 type EventTransfer struct {
 	Ctx     *player.Context
 	Address *net.UDPAddr
@@ -297,7 +297,7 @@ type EventTransfer struct {
 
 func (e *EventTransfer) Cancel() { e.Ctx.Cancel() }
 
-// EventCommandExecution is dispatched when a player executes a command.
+// EventCommandExecution is emitted when a player executes a command.
 type EventCommandExecution struct {
 	Ctx     *player.Context
 	Command cmd.Command
@@ -306,17 +306,17 @@ type EventCommandExecution struct {
 
 func (e *EventCommandExecution) Cancel() { e.Ctx.Cancel() }
 
-// EventJoin is dispatched when a player joins the server.
+// EventJoin is emitted when a player joins the server.
 type EventJoin struct {
 	Player *player.Player
 }
 
-// EventQuit is dispatched when a player quits the server.
+// EventQuit is emitted when a player quits the server.
 type EventQuit struct {
 	Player *player.Player
 }
 
-// EventDiagnostics is dispatched for diagnostics data.
+// EventDiagnostics is emitted for diagnostics data.
 type EventDiagnostics struct {
 	Player      *player.Player
 	Diagnostics session.Diagnostics

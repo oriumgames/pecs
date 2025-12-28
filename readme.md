@@ -416,7 +416,6 @@ bundle.Loop(&TickLoop{}, 0, pecs.Before)
 
 // Global loop (no session field or component) - runs once per interval
 type WorldCleanupLoop struct {
-    pecs.Runnable
     Manager *pecs.Manager
     Config  *ServerConfig `pecs:"res"`
 }
@@ -455,7 +454,6 @@ bundle.Task(&TeleportTask{}, pecs.Default)
 
 // Global task (no session field or component)
 type ServerAnnouncementTask struct {
-    pecs.Runnable
     Manager *pecs.Manager
     Message string
 }
@@ -492,7 +490,7 @@ repeatHandle.Cancel()
 
 // Global tasks (not tied to any session)
 pecs.ScheduleGlobal(mngr, &ServerAnnouncementTask{Message: "Restarting!"}, 5*time.Minute)
-pecs.DispatchGlobal(sess, &SomeGlobalTask{})
+pecs.DispatchGlobal(mngr, &SomeGlobalTask{})
 ```
 
 **Multi-Session Tasks:**

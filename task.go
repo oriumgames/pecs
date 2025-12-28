@@ -260,8 +260,8 @@ func ScheduleGlobal(m *Manager, task Runnable, delay time.Duration) *TaskHandle 
 // DispatchGlobal schedules a global task for execution immediately.
 // The task runs once in the manager's default world and is not tied to any session.
 // Returns a TaskHandle that can be used to cancel the task.
-func DispatchGlobal(s *Session, task Runnable) *TaskHandle {
-	return ScheduleGlobal(s.manager, task, 0)
+func DispatchGlobal(m *Manager, task Runnable) *TaskHandle {
+	return ScheduleGlobal(m, task, 0)
 }
 
 // Schedule schedules a task for execution after the given delay.

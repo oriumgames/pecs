@@ -479,7 +479,12 @@ func (m *Manager) build() error {
 			}
 			// Store computed metadata back
 			if i < len(b.handlerMeta) {
-				b.handlerMeta[i] = m.handlers[len(m.handlers)-1].meta
+				// Check which list the handler was added to
+				if len(m.globalHandlers) > 0 && m.globalHandlers[len(m.globalHandlers)-1].bundle == b {
+					b.handlerMeta[i] = m.globalHandlers[len(m.globalHandlers)-1].meta
+				} else if len(m.handlers) > 0 {
+					b.handlerMeta[i] = m.handlers[len(m.handlers)-1].meta
+				}
 			}
 		}
 

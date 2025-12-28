@@ -378,17 +378,13 @@ func (s *Session) processExpirations(nowMs int64) {
 		return
 	}
 
-	// Collect expired component IDs
+	// Collect expired component IDs and remove from map atomically
 	var expired []ComponentID
 	for id, expireMs := range s.expirations {
 		if nowMs >= expireMs {
 			expired = append(expired, id)
+			delete(s.expirations, id)
 		}
-	}
-
-	// Remove from expirations map
-	for _, id := range expired {
-		delete(s.expirations, id)
 	}
 	s.expirationMu.Unlock()
 

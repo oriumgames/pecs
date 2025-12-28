@@ -26,8 +26,11 @@ type Manager struct {
 	// bundles holds all registered bundles
 	bundles []*Bundle
 
-	// handlers holds all registered handler metadata
+	// handlers holds all registered session-scoped handler metadata
 	handlers []*handlerMeta
+
+	// globalHandlers holds all registered global handler metadata
+	globalHandlers []*handlerMeta
 
 	// resources holds global resources
 	resources   map[reflect.Type]unsafe.Pointer
@@ -329,17 +332,31 @@ func (m *Manager) SessionCount() int {
 }
 
 // Broadcast dispatches an event to all active sessions.
+// Global handlers are invoked first, then session-scoped handlers for each session.
 func (m *Manager) Broadcast(event any) {
+	m.dispatchGlobalHandlers(event)
+
 	sessions := m.AllSessions()
 	for _, s := range sessions {
 		s.Dispatch(event)
 	}
 }
 
+// BroadcastGlobal dispatches an event to global handlers only.
+func (m *Manager) BroadcastGlobal(event any) {
+	m.dispatchGlobalHandlers(event)
+}
+
 // BroadcastExcept dispatches an event to all active sessions except the specified ones.
+// Global handlers are invoked first, then session-scoped handlers for each non-excluded session.
 func (m *Manager) BroadcastExcept(event any, exclude ...*Session) {
+	m.dispatchGlobalHandlers(event)
+
 	if len(exclude) == 0 {
-		m.Broadcast(event)
+		sessions := m.AllSessions()
+		for _, s := range sessions {
+			s.Dispatch(event)
+		}
 		return
 	}
 
@@ -354,6 +371,43 @@ func (m *Manager) BroadcastExcept(event any, exclude ...*Session) {
 		if _, excluded := excludeSet[s]; !excluded {
 			s.Dispatch(event)
 		}
+	}
+}
+
+// dispatchGlobalHandlers dispatches an event to all global handlers.
+func (m *Manager) dispatchGlobalHandlers(event any) {
+	if len(m.globalHandlers) == 0 {
+		return
+	}
+
+	eventType := reflect.TypeOf(event)
+	if eventType.Kind() != reflect.Pointer {
+		slog.Warn("pecs: global dispatch ignored non-pointer event",
+			"type", eventType.String())
+		return
+	}
+
+	eventPtr := (*emptyInterface)(unsafe.Pointer(&event)).data
+
+	for _, hm := range m.globalHandlers {
+		dispatcher, ok := hm.events[eventType]
+		if !ok {
+			continue
+		}
+
+		handler := hm.meta.Pool.Get()
+
+		if !injectSystem(handler, nil, hm.meta, hm.bundle, m) {
+			zeroSystem(handler, hm.meta)
+			hm.meta.Pool.Put(handler)
+			continue
+		}
+
+		handlerPtr := (*emptyInterface)(unsafe.Pointer(&handler)).data
+		dispatcher(handlerPtr, eventPtr)
+
+		zeroSystem(handler, hm.meta)
+		hm.meta.Pool.Put(handler)
 	}
 }
 

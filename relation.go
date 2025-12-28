@@ -143,42 +143,37 @@ func (rs *RelationSet[T]) Len() int {
 }
 
 // All returns all non-closed target sessions.
-// Closed sessions are automatically removed from the set during this call.
+// Closed sessions are lazily removed on subsequent calls.
 func (rs *RelationSet[T]) All() []*Session {
 	rs.mu.RLock()
 	targets := make([]*Session, 0, len(rs.targets))
-	var toRemove []*Session
+	hasClosed := false
 	for target := range rs.targets {
 		if target.closed.Load() {
-			toRemove = append(toRemove, target)
+			hasClosed = true
 		} else {
 			targets = append(targets, target)
 		}
 	}
 	rs.mu.RUnlock()
 
-	// Clean up closed sessions
-	if len(toRemove) > 0 {
-		rs.mu.Lock()
-		for _, target := range toRemove {
-			delete(rs.targets, target)
-		}
-		rs.mu.Unlock()
+	// Cleanup closed sessions outside of hot path
+	if hasClosed {
+		rs.cleanupClosed()
 	}
-
 	return targets
 }
 
 // Resolve returns all valid sessions with their components.
 // A session is valid if it's not closed and has the required component T.
-// Invalid sessions are automatically removed from the set during this call.
+// Closed sessions are lazily removed on subsequent calls.
 func (rs *RelationSet[T]) Resolve() []Resolved[T] {
 	rs.mu.RLock()
 	results := make([]Resolved[T], 0, len(rs.targets))
-	var toRemove []*Session
+	hasClosed := false
 	for target := range rs.targets {
 		if target.closed.Load() {
-			toRemove = append(toRemove, target)
+			hasClosed = true
 			continue
 		}
 		comp := Get[T](target)
@@ -191,21 +186,27 @@ func (rs *RelationSet[T]) Resolve() []Resolved[T] {
 	}
 	rs.mu.RUnlock()
 
-	// Clean up closed sessions
-	if len(toRemove) > 0 {
-		rs.mu.Lock()
-		for _, target := range toRemove {
-			delete(rs.targets, target)
-		}
-		rs.mu.Unlock()
+	// Cleanup closed sessions outside of hot path
+	if hasClosed {
+		rs.cleanupClosed()
 	}
-
 	return results
 }
 
 // TargetType returns the reflect.Type of the component targets must have.
 func (rs *RelationSet[T]) TargetType() reflect.Type {
 	return reflect.TypeFor[T]()
+}
+
+// cleanupClosed removes closed sessions from the set.
+func (rs *RelationSet[T]) cleanupClosed() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	for target := range rs.targets {
+		if target.closed.Load() {
+			delete(rs.targets, target)
+		}
+	}
 }
 
 // getTargets returns a copy of the underlying target map.

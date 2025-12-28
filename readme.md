@@ -385,6 +385,36 @@ Handlers also support custom event types. See [Events](#events) for details on d
 
 Handlers execute synchronously in registration order. All matching handlers complete before `Dispatch()` returns.
 
+**Global Handlers:**
+
+Handlers without a `*pecs.Session` field or session-scoped components are global handlers. They run once per event instead of once per session. This is useful for logging, analytics, anti-cheat, or any cross-cutting concern that doesn't need per-session state.
+
+```go
+// Global handler - runs once per event, not per-session
+type ChatLogger struct {
+    Manager *pecs.Manager
+    Config  *ServerConfig `pecs:"res"`
+}
+
+func (h *ChatLogger) HandleChat(ev *pecs.EventChat) {
+    // Runs once when any player chats
+    log.Printf("[CHAT] %s", *ev.Message)
+}
+
+// Session-scoped handler - runs for each matching session
+type ChatFilter struct {
+    Session *pecs.Session  // Having Session makes this session-scoped
+    Muted   *MutedPlayer
+}
+
+func (h *ChatFilter) HandleChat(ev *pecs.EventChat) {
+    // Runs for the player who sent the message
+    ev.Cancel()
+}
+```
+
+When using `Manager.Broadcast()`, global handlers are invoked first, then session-scoped handlers for each session. Use `Manager.BroadcastGlobal()` to invoke only global handlers.
+
 ### Loops
 
 Loops run at fixed intervals for all sessions that match their component requirements. Loops without a `*pecs.Session` field or session components are global and run once per interval instead of per-session.
@@ -1377,6 +1407,7 @@ mngr.SessionCount() int
 // Events
 mngr.Broadcast(event any)
 mngr.BroadcastExcept(event any, exclude ...*Session)
+mngr.BroadcastGlobal(event any)
 
 // Federation
 mngr.RegisterPeerProvider(p PeerProvider, opts ...ProviderOption)
@@ -1500,8 +1531,6 @@ sharedSet.Resolve(m *Manager) []*T
 pecs.Command(src cmd.Source) (*player.Player, *Session)
 pecs.Form(sub form.Submitter) (*player.Player, *Session)
 pecs.Item(user item.User) (*player.Player, *Session)
-pecs.MustCommand(src cmd.Source) (*player.Player, *Session)
-pecs.MustForm(sub form.Submitter) (*player.Player, *Session)
 pecs.NewHandler(sess *Session, p *player.Player) Handler
 ```
 

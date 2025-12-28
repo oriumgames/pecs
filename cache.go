@@ -49,8 +49,8 @@ type peerCacheEntry struct {
 	// components maps component type -> unsafe.Pointer to data
 	components sync.Map
 
-	// refCount tracks how many local references point to this player
-	refCount atomic.Int32
+	// lastAccessedAt is when the data was last accessed (unix millis)
+	lastAccessedAt atomic.Int64
 
 	// fetchedAt is when the data was last fetched (unix millis)
 	fetchedAt atomic.Int64
@@ -182,17 +182,13 @@ func (pc *peerCache) resolve(playerID string, componentType reflect.Type) unsafe
 		return nil
 	}
 
-	// Get or create entry
 	entry := pc.getOrCreateEntry(playerID)
-	entry.refCount.Add(1)
-
 	status := entry.status.Load()
 
 	// Check if error state should be reset for retry
 	if status == cacheStatusError {
 		now := time.Now().UnixMilli()
 		if now-entry.errorAt.Load() > cacheRetryDelayMs {
-			// Enough time has passed, try again
 			if entry.status.CompareAndSwap(cacheStatusError, cacheStatusPending) {
 				status = cacheStatusPending
 			}
@@ -210,12 +206,12 @@ func (pc *peerCache) resolve(playerID string, componentType reflect.Type) unsafe
 
 	// Check if ready
 	if entry.status.Load() != cacheStatusReady {
-		entry.refCount.Add(-1)
 		return nil
 	}
 
 	// Get component
 	if val, ok := entry.components.Load(componentType); ok {
+		entry.lastAccessedAt.Store(time.Now().UnixMilli())
 		return val.(unsafe.Pointer)
 	}
 	return nil
@@ -240,12 +236,12 @@ func (pc *peerCache) resolveMany(playerIDs []string, componentType reflect.Type)
 		}
 
 		entry := pc.getOrCreateEntry(id)
-		entry.refCount.Add(1)
 		entries[i] = entry
 
 		switch entry.status.Load() {
 		case cacheStatusReady:
 			if val, ok := entry.components.Load(componentType); ok {
+				entry.lastAccessedAt.Store(time.Now().UnixMilli())
 				results[i] = val.(unsafe.Pointer)
 			}
 		case cacheStatusPending:
@@ -457,11 +453,6 @@ func (e *peerCacheEntry) processUpdates() {
 	}
 }
 
-// release decrements the reference count.
-func (e *peerCacheEntry) release() {
-	e.refCount.Add(-1)
-}
-
 // close shuts down the entry and cleans up resources.
 func (e *peerCacheEntry) close() {
 	if !e.status.CompareAndSwap(cacheStatusReady, cacheStatusClosing) &&
@@ -497,20 +488,23 @@ func (pc *peerCache) cleanupLoop() {
 	}
 }
 
-// cleanup removes entries with zero references past their grace period.
+// cleanup removes stale entries past their grace period.
 func (pc *peerCache) cleanup() {
 	now := time.Now().UnixMilli()
 
 	pc.entries.Range(func(key, value any) bool {
 		entry := value.(*peerCacheEntry)
 
-		if entry.refCount.Load() <= 0 {
-			// Check grace period (default 30 seconds)
-			age := now - entry.fetchedAt.Load()
-			if age > cacheGracePeriodMs {
-				entry.close()
-				pc.entries.Delete(key)
-			}
+		// Use lastAccessedAt if set, otherwise fall back to fetchedAt
+		lastAccess := entry.lastAccessedAt.Load()
+		if lastAccess == 0 {
+			lastAccess = entry.fetchedAt.Load()
+		}
+
+		age := now - lastAccess
+		if age > cacheGracePeriodMs {
+			entry.close()
+			pc.entries.Delete(key)
 		}
 
 		return true
@@ -574,8 +568,8 @@ type sharedCacheEntry struct {
 	// dataType is the type of the stored data
 	dataType reflect.Type
 
-	// refCount tracks how many local references point to this entity
-	refCount atomic.Int32
+	// lastAccessedAt is when the data was last accessed (unix millis)
+	lastAccessedAt atomic.Int64
 
 	// fetchedAt is when the data was last fetched (unix millis)
 	fetchedAt atomic.Int64
@@ -667,10 +661,7 @@ func (sc *sharedCache) resolve(entityID string, dataType reflect.Type) unsafe.Po
 		return nil
 	}
 
-	// Get or create entry
 	entry := sc.getOrCreateEntry(entityID, dataType)
-	entry.refCount.Add(1)
-
 	status := entry.status.Load()
 
 	// Check if error state should be reset for retry
@@ -694,7 +685,6 @@ func (sc *sharedCache) resolve(entityID string, dataType reflect.Type) unsafe.Po
 
 	// Check if ready
 	if entry.status.Load() != cacheStatusReady {
-		entry.refCount.Add(-1)
 		return nil
 	}
 
@@ -703,6 +693,7 @@ func (sc *sharedCache) resolve(entityID string, dataType reflect.Type) unsafe.Po
 	if dataPtr == nil {
 		return nil
 	}
+	entry.lastAccessedAt.Store(time.Now().UnixMilli())
 	return ptrValueRaw(*dataPtr)
 }
 
@@ -724,12 +715,12 @@ func (sc *sharedCache) resolveMany(entityIDs []string, dataType reflect.Type) []
 		}
 
 		entry := sc.getOrCreateEntry(id, dataType)
-		entry.refCount.Add(1)
 		entries[i] = entry
 
 		switch entry.status.Load() {
 		case cacheStatusReady:
 			if dataPtr := entry.data.Load(); dataPtr != nil {
+				entry.lastAccessedAt.Store(time.Now().UnixMilli())
 				results[i] = ptrValueRaw(*dataPtr)
 			}
 		case cacheStatusPending:
@@ -881,8 +872,9 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 		entry.status.Store(cacheStatusReady)
 
 		// Subscribe for updates
-		go func(provider SharedProvider) {
-			sub, err := provider.SubscribeEntity(context.Background(), entry.entityID, entry.updateCh)
+		capturedProvider := p
+		sc.spawnWorker(func() {
+			sub, err := capturedProvider.SubscribeEntity(sc.ctx, entry.entityID, entry.updateCh)
 			if err != nil {
 				return
 			}
@@ -890,7 +882,7 @@ func (sc *sharedCache) fetchAndSubscribe(entry *sharedCacheEntry, dataType refle
 			entry.subscriptionMu.Lock()
 			entry.subscription = sub
 			entry.subscriptionMu.Unlock()
-		}(p)
+		})
 
 		return
 	}
@@ -916,11 +908,6 @@ func (e *sharedCacheEntry) processUpdates() {
 			e.fetchedAt.Store(time.Now().UnixMilli())
 		}
 	}
-}
-
-// release decrements the reference count.
-func (e *sharedCacheEntry) release() {
-	e.refCount.Add(-1)
 }
 
 // close shuts down the entry and cleans up resources.
@@ -958,20 +945,23 @@ func (sc *sharedCache) cleanupLoop() {
 	}
 }
 
-// cleanup removes entries with zero references past their grace period.
+// cleanup removes stale entries past their grace period.
 func (sc *sharedCache) cleanup() {
 	now := time.Now().UnixMilli()
 
 	sc.entries.Range(func(key, value any) bool {
 		entry := value.(*sharedCacheEntry)
 
-		if entry.refCount.Load() <= 0 {
-			// Check grace period (default 30 seconds)
-			age := now - entry.fetchedAt.Load()
-			if age > cacheGracePeriodMs {
-				entry.close()
-				sc.entries.Delete(key)
-			}
+		// Use lastAccessedAt if set, otherwise fall back to fetchedAt
+		lastAccess := entry.lastAccessedAt.Load()
+		if lastAccess == 0 {
+			lastAccess = entry.fetchedAt.Load()
+		}
+
+		age := now - lastAccess
+		if age > cacheGracePeriodMs {
+			entry.close()
+			sc.entries.Delete(key)
 		}
 
 		return true

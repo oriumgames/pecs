@@ -618,11 +618,18 @@ func (m *Manager) registerHandler(h any, bundle *Bundle) error {
 		}
 	}
 
-	m.handlers = append(m.handlers, &handlerMeta{
+	hm := &handlerMeta{
 		meta:   meta,
 		bundle: bundle,
 		events: events,
-	})
+	}
+
+	// Separate global handlers from session-scoped handlers
+	if meta.IsGlobal {
+		m.globalHandlers = append(m.globalHandlers, hm)
+	} else {
+		m.handlers = append(m.handlers, hm)
+	}
 
 	return nil
 }

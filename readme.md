@@ -459,7 +459,10 @@ type ServerAnnouncementTask struct {
 }
 
 func (t *ServerAnnouncementTask) Run(tx *world.Tx) {
-    t.Manager.MessageAll(tx, t.Message)
+    for _, s := range t.Manager.AllSessions() {
+        p, _ := s.Player(tx)
+        p.Message(t.Message)
+    }
 }
 ```
 

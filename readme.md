@@ -1463,7 +1463,7 @@ pecs.ScheduleRepeating(s *Session, task Runnable, interval time.Duration, times 
 pecs.ScheduleGlobal(m *Manager, task Runnable, delay time.Duration) *TaskHandle
 pecs.Dispatch(s *Session, task Runnable) *TaskHandle
 pecs.Dispatch2(s1, s2 *Session, task Runnable) *TaskHandle
-pecs.DispatchGlobal(s *Session, task Runnable) *TaskHandle
+pecs.DispatchGlobal(m *Manager, task Runnable) *TaskHandles
 
 handle.Cancel()
 repeatHandle.Cancel()

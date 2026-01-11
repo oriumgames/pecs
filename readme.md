@@ -206,10 +206,10 @@ cfg := pecs.ActorConfig{
 }
 
 // Spawn a fake player (can participate in Peer[T] lookups with fakeID)
-sess := mngr.SpawnFake(tx, cfg, "fake-player-123")
+p, sess := mngr.SpawnFake(tx, cfg, "fake-player-123")
 
 // Spawn an NPC entity (local only, no federation)
-sess := mngr.SpawnEntity(tx, cfg)
+p, sess := mngr.SpawnEntity(tx, cfg)
 
 // Add components as usual
 pecs.Add(sess, &Health{Current: 100, Max: 100})
@@ -1419,8 +1419,8 @@ mngr.Shutdown()
 mngr.TickNumber() uint64
 
 // Spawn
-mngr.SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Session
-mngr.SpawnEntity(tx *world.Tx, cfg ActorConfig) *Session
+mngr.SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) (*player.Player, *Session)
+mngr.SpawnEntity(tx *world.Tx, cfg ActorConfig) (*player.Player, *Session)
 ```
 
 ### Session

@@ -11,7 +11,6 @@ import (
 
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
-	"github.com/go-gl/mathgl/mgl64"
 	"github.com/google/uuid"
 )
 
@@ -550,23 +549,45 @@ func (m *Manager) RegisterSharedProvider(p SharedProvider, opts ...ProviderOptio
 // spawnActor creates a fake player entity and registers it as a PECS session.
 // This is the internal helper used by SpawnFake and SpawnEntity.
 // Unlike NewSession, this does not initialize from providers (bots don't have XUID).
-func (m *Manager) spawnActor(tx *world.Tx, cfg ActorConfig) *Session {
+func (m *Manager) spawnActor(tx *world.Tx, cfg ActorConfig) (*player.Player, *Session) {
 	// Create player entity spawn options
-	opts := world.EntitySpawnOpts{Position: cfg.Position}
+	opts := world.EntitySpawnOpts{
+		Position: cfg.Position,
+		Rotation: cfg.Rotation,
+		Velocity: cfg.Velocity,
+	}
 
 	// Create the entity handle with player type
 	ent := opts.New(player.Type, player.Config{
-		Name:     cfg.Name,
-		Skin:     cfg.Skin,
-		Position: cfg.Position,
+		Name:                cfg.Name,
+		Skin:                cfg.Skin,
+		GameMode:            cfg.GameMode,
+		Position:            cfg.Position,
+		Rotation:            cfg.Rotation,
+		Velocity:            cfg.Velocity,
+		Health:              cfg.Health,
+		MaxHealth:           cfg.HealthMax,
+		FoodTick:            cfg.FoodTick,
+		Food:                cfg.Food,
+		Exhaustion:          cfg.Exhaustion,
+		Saturation:          cfg.Saturation,
+		AirSupply:           cfg.AirSupply,
+		MaxAirSupply:        cfg.AirSupplyMax,
+		EnchantmentSeed:     cfg.EnchantmentSeed,
+		Experience:          cfg.Experience,
+		HeldSlot:            cfg.HeldSlot,
+		Inventory:           cfg.Inventory,
+		OffHand:             cfg.OffHand,
+		Armour:              cfg.Armour,
+		EnderChestInventory: cfg.EnderChest,
+		FireTicks:           cfg.FireTicks,
+		FallDistance:        cfg.FallDistance,
+		Effects:             cfg.Effects,
 	})
 
 	// Add to world and get the player
 	e := tx.AddEntity(ent)
 	p := e.(*player.Player)
-
-	// Apply rotation
-	p.Move(mgl64.Vec3{}, cfg.Yaw, cfg.Pitch)
 
 	// Create session manually (no provider init for bots)
 	s := &Session{
@@ -577,23 +598,23 @@ func (m *Manager) spawnActor(tx *world.Tx, cfg ActorConfig) *Session {
 		manager: m,
 	}
 
-	s.updateWorldCache(tx.World())
-	m.addSession(s)
-
-	// Set the PECS handler on the player
-	p.Handle(NewHandler(s, p))
-
-	return s
+	return p, s
 }
 
 // SpawnFake creates a fake player (testing bot) and registers it as a PECS session.
 // The fakeID is used as the federated identifier for Peer[T] resolution.
 // Returns the session for adding components.
-func (m *Manager) SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Session {
-	sess := m.spawnActor(tx, cfg)
+func (m *Manager) SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) (*player.Player, *Session) {
+	p, sess := m.spawnActor(tx, cfg)
 	sess.isFake = true
 	sess.fakeID = fakeID
 	Add(sess, &FakeMarker{})
+
+	sess.updateWorldCache(tx.World())
+	m.addSession(sess)
+
+	// Set the PECS handler on the player
+	p.Handle(NewHandler(sess, p))
 
 	// Register in fakeID index for fast lookup
 	if fakeID != "" {
@@ -602,17 +623,24 @@ func (m *Manager) SpawnFake(tx *world.Tx, cfg ActorConfig, fakeID string) *Sessi
 		m.sessionsByFakeIDMu.Unlock()
 	}
 
-	return sess
+	return p, sess
 }
 
 // SpawnEntity creates an NPC entity and registers it as a PECS session.
 // Entities do not participate in cross-server Peer[T] lookups.
 // Returns the session for adding components.
-func (m *Manager) SpawnEntity(tx *world.Tx, cfg ActorConfig) *Session {
-	sess := m.spawnActor(tx, cfg)
+func (m *Manager) SpawnEntity(tx *world.Tx, cfg ActorConfig) (*player.Player, *Session) {
+	p, sess := m.spawnActor(tx, cfg)
 	sess.isEntity = true
 	Add(sess, &EntityMarker{})
-	return sess
+
+	sess.updateWorldCache(tx.World())
+	m.addSession(sess)
+
+	// Set the PECS handler on the player
+	p.Handle(NewHandler(sess, p))
+
+	return p, sess
 }
 
 // ResolvePeer resolves a Peer[T] reference to the target's component.

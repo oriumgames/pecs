@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.9
 
 require (
-	github.com/df-mc/dragonfly v0.10.10
+	github.com/df-mc/dragonfly v0.10.11-0.20260109070725-56fe7b1c866a
 	github.com/go-gl/mathgl v1.2.0
 	github.com/google/uuid v1.6.0
 )
@@ -20,7 +20,7 @@ require (
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/sandertv/go-raknet v1.14.3-0.20251222161826-51e403c0c769 // indirect
-	github.com/sandertv/gophertunnel v1.52.1 // indirect
+	github.com/sandertv/gophertunnel v1.52.2 // indirect
 	github.com/segmentio/fasthash v1.0.3 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
 	golang.org/x/net v0.48.0 // indirect

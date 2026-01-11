@@ -529,14 +529,6 @@ func analyzeSystem(systemType reflect.Type, bundle *Bundle, registry *componentR
 				}
 			}
 
-			// Add to requires if not optional
-			if !tag.Optional {
-				meta.RequireMask.Set(compID)
-				if currentWindow != nil {
-					currentWindow.RequireMask.Set(compID)
-				}
-			}
-
 			// Track access for conflict detection
 			if tag.Mutable {
 				meta.Access.Writes = append(meta.Access.Writes, compType)

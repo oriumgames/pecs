@@ -1,22 +1,54 @@
 package pecs
 
 import (
+	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/entity/effect"
+	"github.com/df-mc/dragonfly/server/item/inventory"
 	"github.com/df-mc/dragonfly/server/player/skin"
+	"github.com/df-mc/dragonfly/server/world"
 	"github.com/go-gl/mathgl/mgl64"
 )
 
-// ActorConfig contains settings for spawning a fake player or NPC entity.
+// ActorConfig configures the initial state of a fake player or NPC entity.
+// It is used with Manager.SpawnFake and Manager.SpawnEntity.
 type ActorConfig struct {
-	// Name is the display name of the actor.
-	Name string
-	// Skin is the skin applied to the actor.
-	Skin skin.Skin
-	// Position is the spawn position in the world.
-	Position mgl64.Vec3
-	// Yaw is the horizontal rotation.
-	Yaw float64
-	// Pitch is the vertical rotation.
-	Pitch float64
+	// Identity & Core Settings
+	Name     string
+	Skin     skin.Skin
+	GameMode world.GameMode
+
+	// Position & Physics
+	Position     mgl64.Vec3
+	Velocity     mgl64.Vec3
+	Rotation     cube.Rotation
+	FallDistance float64
+
+	// Vitals: Health
+	Health    float64
+	HealthMax float64
+
+	// Vitals: Hunger
+	Food       int
+	FoodTick   int
+	Saturation float64
+	Exhaustion float64
+
+	// Vitals: Breath
+	AirSupply    int
+	AirSupplyMax int
+
+	// Inventory & Equipment
+	Inventory  *inventory.Inventory
+	EnderChest *inventory.Inventory
+	OffHand    *inventory.Inventory
+	Armour     *inventory.Armour
+	HeldSlot   int
+
+	// State, Effects & Progression
+	Experience      int
+	EnchantmentSeed int64
+	FireTicks       int64
+	Effects         []effect.Effect
 }
 
 // FakeMarker marks a session as a fake player (testing bot).

@@ -469,6 +469,16 @@ func (h *SessionHandler) HandleSignEdit(ctx *player.Context, pos cube.Pos, front
 	eventSignEditPool.Put(ev)
 }
 
+// HandleSleep handles sleeping in a bed.
+func (h *SessionHandler) HandleSleep(ctx *player.Context, sendReminder *bool) {
+	ev := eventSleepPool.Get().(*EventSleep)
+	ev.Ctx = ctx
+	ev.SendReminder = sendReminder
+	h.session.Emit(ev)
+	*ev = EventSleep{}
+	eventSleepPool.Put(ev)
+}
+
 // HandleLecternPageTurn handles page turning on lecterns.
 func (h *SessionHandler) HandleLecternPageTurn(ctx *player.Context, pos cube.Pos, oldPage int, newPage *int) {
 	ev := eventLecternPageTurnPool.Get().(*EventLecternPageTurn)
